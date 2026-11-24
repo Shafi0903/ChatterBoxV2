@@ -56,6 +56,9 @@ import {
   CreateStoryDto,
   IceServersResponse,
   PaginatedCallsResponse,
+  GlobalSearchResponse,
+  SearchType,
+  HealthCheckResponse,
 } from '@chatterbox/shared';
 import { updateSocketToken } from './socket';
 
@@ -727,4 +730,20 @@ export const api = {
       { method: 'GET' },
     );
   },
+
+  // Phase 8 Global Search & Health
+  globalSearch: (q: string, type: SearchType = 'all', limit = 5) => {
+    const params = new URLSearchParams();
+    params.append('q', q);
+    if (type !== 'all') params.append('type', type);
+    if (limit) params.append('limit', limit.toString());
+    return apiRequest<GlobalSearchResponse>(`/search?${params.toString()}`, {
+      method: 'GET',
+    });
+  },
+
+  getHealth: () =>
+    apiRequest<HealthCheckResponse>('/health', {
+      method: 'GET',
+    }),
 };

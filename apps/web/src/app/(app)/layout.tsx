@@ -11,7 +11,7 @@ import { initializeDeviceKeys } from '../../lib/e2eeManager';
 import { Sidebar } from '../../components/layout/Sidebar';
 import { TopBar } from '../../components/layout/TopBar';
 import { MobileNav } from '../../components/layout/MobileNav';
-import { SearchModal } from '../../components/layout/SearchModal';
+import { GlobalSearchModal } from '../../components/search/GlobalSearchModal';
 import { IncomingCallModal } from '../../components/calls/IncomingCallModal';
 import { ActiveCallOverlay } from '../../components/calls/ActiveCallOverlay';
 import { Skeleton } from '../../components/ui/Skeleton';
@@ -126,8 +126,8 @@ export default function AppLayout({
       {/* Mobile Navigation */}
       <MobileNav onOpenSearch={() => setIsSearchOpen(true)} />
 
-      {/* Command Palette Search Modal */}
-      <SearchModal
+      {/* Command Palette Global Search Modal */}
+      <GlobalSearchModal
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
       />

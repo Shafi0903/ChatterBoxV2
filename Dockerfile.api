@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+# Multi-stage production build for Chatterbox API
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@12.23.0 --activate
+
+# Copy workspace configurations
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY apps/api/package.json ./apps/api/
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy source trees
+COPY packages/shared/ ./packages/shared/
+COPY apps/api/ ./apps/api/
+
+# Build shared library
+RUN pnpm --filter @chatterbox/shared build
+
+# Generate Prisma Client & Build API
+RUN cd apps/api && pnpm prisma generate && pnpm build
+
+# Stage 2: Production Runner
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=4000
+
+RUN addgroup --system --gid 1001 chatterbox && \
+    adduser --system --uid 1001 chatterbox
+
+RUN corepack enable && corepack prepare pnpm@12.23.0 --activate
+
+# Copy workspace metadata for production pruned dependencies
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY apps/api/package.json ./apps/api/
+
+RUN pnpm install --prod --frozen-lockfile
+
+# Copy compiled shared package
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+
+# Copy compiled API dist and Prisma schema
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/apps/api/prisma ./apps/api/prisma
+COPY --from=builder /app/node_modules/.pnpm/@prisma+client* ./node_modules/
+
+USER chatterbox
+
+EXPOSE 4000
+
+WORKDIR /app/apps/api
+
+CMD ["node", "dist/src/main"]
