@@ -1,15 +1,20 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ConversationMemberItem } from '@chatterbox/shared';
 import { useAuthStore } from '../../stores/auth.store';
 import { useChatStore } from '../../stores/chat.store';
 import { MessageFeed } from './MessageFeed';
 import { MessageComposer } from './MessageComposer';
+import { SafetyNumberModal } from './SafetyNumberModal';
 import { Avatar } from '../ui/Avatar';
+import { api } from '../../lib/api';
 import {
   ArrowLeft,
   Users2,
   PanelRight,
   MessageSquare,
+  Lock,
+  Shield,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -32,6 +37,10 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
   } = useChatStore();
 
   const isDm = activeConversationDetail?.type === 'DM';
+  const isEncrypted = Boolean(activeConversationDetail?.isEncrypted);
+  const [isSafetyModalOpen, setIsSafetyModalOpen] = useState(false);
+  const [isEnablingE2ee, setIsEnablingE2ee] = useState(false);
+  const [enableE2eeError, setEnableE2eeError] = useState<string | null>(null);
 
   // For DMs, find the other member
   const otherMember = useMemo(() => {
@@ -40,6 +49,29 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
       (m: ConversationMemberItem) => m.userId !== currentUserId,
     );
   }, [isDm, activeConversationDetail, currentUserId]);
+
+  const handleEnableE2ee = async () => {
+    if (!conversationId) return;
+    setIsEnablingE2ee(true);
+    setEnableE2eeError(null);
+    try {
+      await api.enableConversationE2ee(conversationId);
+      // Update local conversation detail state
+      useChatStore.setState((s) => ({
+        activeConversationDetail: s.activeConversationDetail
+          ? { ...s.activeConversationDetail, isEncrypted: true }
+          : null,
+        conversations: s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, isEncrypted: true } : c,
+        ),
+      }));
+    } catch (err: any) {
+      setEnableE2eeError(err.message || 'Failed to enable E2EE. Ensure both users have active devices.');
+      setTimeout(() => setEnableE2eeError(null), 4000);
+    } finally {
+      setIsEnablingE2ee(false);
+    }
+  };
 
   const displayName = isDm
     ? otherMember?.displayName || otherMember?.username || 'Direct Message'
@@ -143,7 +175,40 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
         </div>
 
         {/* Header Right Actions */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          {/* E2EE Controls for 1:1 DMs */}
+          {isDm && (
+            <>
+              {isEncrypted ? (
+                <button
+                  type="button"
+                  onClick={() => setIsSafetyModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/25 hover:bg-emerald-500/20 text-emerald-400 text-[11px] font-semibold transition-all duration-150 shadow-sm"
+                  title="Verified End-to-End Encrypted. Click to verify safety number."
+                >
+                  <Lock className="w-3 h-3 text-emerald-400" />
+                  <span className="hidden sm:inline">End-to-End Encrypted</span>
+                  <span className="sm:hidden">E2EE</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isEnablingE2ee}
+                  onClick={handleEnableE2ee}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-surface hover:bg-surface-hover border border-border text-secondary hover:text-primary text-[11px] font-semibold transition-all duration-150 disabled:opacity-50"
+                  title="Enable End-to-End Encryption for this direct message"
+                >
+                  {isEnablingE2ee ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-accent-bright" />
+                  ) : (
+                    <Shield className="w-3 h-3 text-emerald-400" />
+                  )}
+                  <span>Enable E2EE</span>
+                </button>
+              )}
+            </>
+          )}
+
           {/* Toggle Details Panel */}
           <button
             type="button"
@@ -161,6 +226,29 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Enable E2EE Error Toast */}
+      {enableE2eeError && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-amber-300 text-xs flex items-center justify-between animate-in fade-in">
+          <span>{enableE2eeError}</span>
+          <button
+            onClick={() => setEnableE2eeError(null)}
+            className="p-1 hover:text-white"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Safety Number Modal */}
+      {isDm && otherMember && (
+        <SafetyNumberModal
+          isOpen={isSafetyModalOpen}
+          onClose={() => setIsSafetyModalOpen(false)}
+          peerUserId={otherMember.userId}
+          peerDisplayName={displayName}
+        />
+      )}
 
       {/* Message Feed */}
       <MessageFeed

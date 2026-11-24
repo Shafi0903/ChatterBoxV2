@@ -9,11 +9,23 @@ import {
   Shield,
   Bell,
   CheckCircle2,
+  Smartphone,
+  Laptop,
+  Trash2,
+  AlertCircle,
+  KeyRound,
+  Lock,
 } from 'lucide-react';
-import { ThemePreference, ProfileVisibility, UserSettings } from '@chatterbox/shared';
+import {
+  ThemePreference,
+  ProfileVisibility,
+  UserSettings,
+  DeviceSummary,
+} from '@chatterbox/shared';
 import { api, ApiError } from '../../../lib/api';
 import { useAuthStore } from '../../../stores/auth.store';
 import { useThemeStore } from '../../../stores/theme.store';
+import { getUserKeys } from '../../../lib/keyStore';
 import { Button } from '../../../components/ui/Button';
 import { Skeleton } from '../../../components/ui/Skeleton';
 
@@ -21,11 +33,55 @@ export default function SettingsPage() {
   const { settings, updateSettingsState } = useAuthStore();
   const { theme, setTheme } = useThemeStore();
 
+  const user = useAuthStore((s) => s.user);
   const [currentSettings, setCurrentSettings] = useState<UserSettings | null>(settings);
   const [isLoading, setIsLoading] = useState(!settings);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // E2EE Devices state
+  const [devices, setDevices] = useState<DeviceSummary[]>([]);
+  const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
+  const [isLoadingDevices, setIsLoadingDevices] = useState(true);
+  const [revokingDeviceId, setRevokingDeviceId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (user?.id) {
+      getUserKeys(user.id).then((k) => {
+        if (k) setCurrentDeviceId(k.deviceId);
+      });
+
+      api
+        .getMyDevices()
+        .then((res) => {
+          setDevices(res);
+        })
+        .catch(() => {
+          // ignore
+        })
+        .finally(() => {
+          setIsLoadingDevices(false);
+        });
+    }
+  }, [user]);
+
+  const handleRevokeDevice = async (deviceId: string) => {
+    if (!confirm('Are you sure you want to revoke this device? It will no longer be able to send or receive encrypted messages.')) {
+      return;
+    }
+    setRevokingDeviceId(deviceId);
+    try {
+      await api.revokeDevice(deviceId);
+      setDevices((prev) =>
+        prev.map((d) => (d.id === deviceId ? { ...d, revokedAt: new Date().toISOString() } : d)),
+      );
+    } catch (err: any) {
+      alert(err.message || 'Failed to revoke device');
+    } finally {
+      setRevokingDeviceId(null);
+    }
+  };
 
   useEffect(() => {
     if (!settings) {
@@ -264,6 +320,114 @@ export default function SettingsPage() {
             onChange={(e) => handleUpdate({ notifyMentions: e.target.checked })}
             className="w-4 h-4 accent-accent rounded cursor-pointer"
           />
+        </div>
+      </section>
+
+      {/* 4. Security & E2EE Devices */}
+      <section className="bg-surface border border-border rounded-2xl p-6 space-y-5">
+        <div className="flex items-center gap-2">
+          <KeyRound className="w-4 h-4 text-emerald-400" />
+          <h2 className="text-sm font-semibold text-primary">Security & End-to-End Encryption</h2>
+        </div>
+
+        {/* Honest Key Recovery Notice */}
+        <div className="p-4 rounded-2xl bg-canvas border border-border/80 space-y-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-primary">
+            <Lock className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Private Key Storage & Recovery Notice</span>
+          </div>
+          <p className="text-[11px] text-muted leading-relaxed">
+            ChatterBox never transmits or stores your private cryptographic keys on our servers. Your keys are stored locally in this browser's secure IndexedDB storage.
+          </p>
+          <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              If you clear your browser data or website cache, you will lose access to past encrypted message history on this device.
+            </span>
+          </div>
+        </div>
+
+        {/* Registered Devices List */}
+        <div className="space-y-3 pt-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-secondary uppercase tracking-wider">
+              Registered Devices ({devices.filter((d) => !d.revokedAt).length})
+            </h3>
+          </div>
+
+          {isLoadingDevices ? (
+            <div className="space-y-2">
+              <Skeleton className="w-full h-14 rounded-xl" />
+              <Skeleton className="w-full h-14 rounded-xl" />
+            </div>
+          ) : devices.length === 0 ? (
+            <div className="text-center py-6 text-xs text-muted border border-dashed border-border rounded-xl">
+              No registered devices found.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {devices.map((device) => {
+                const isCurrent = device.id === currentDeviceId;
+                const isRevoked = Boolean(device.revokedAt);
+
+                return (
+                  <div
+                    key={device.id}
+                    className="p-3.5 rounded-xl bg-canvas border border-border/60 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-surface border border-border flex items-center justify-center text-secondary shrink-0">
+                        {device.deviceName.toLowerCase().includes('phone') ||
+                        device.deviceName.toLowerCase().includes('ios') ||
+                        device.deviceName.toLowerCase().includes('android') ? (
+                          <Smartphone className="w-4 h-4" />
+                        ) : (
+                          <Laptop className="w-4 h-4" />
+                        )}
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-primary truncate">
+                            {device.deviceName}
+                          </span>
+                          {isCurrent && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-semibold">
+                              This Device
+                            </span>
+                          )}
+                          {isRevoked && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-status-busy/15 border border-status-busy/30 text-status-busy text-[10px] font-semibold">
+                              Revoked
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[10px] text-muted mt-0.5">
+                          <span>PreKeys Remaining: {device.remainingPreKeys}</span>
+                          <span>•</span>
+                          <span>Registered {new Date(device.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {!isRevoked && !isCurrent && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={revokingDeviceId === device.id}
+                        onClick={() => handleRevokeDevice(device.id)}
+                        className="text-status-busy hover:text-white hover:bg-status-busy/20 border-status-busy/30 text-xs px-2.5 py-1 shrink-0"
+                      >
+                        <Trash2 className="w-3 h-3 mr-1" />
+                        Revoke
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </section>
     </div>

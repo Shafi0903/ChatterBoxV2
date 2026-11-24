@@ -42,6 +42,21 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const isSender = message.senderId === currentUserId;
   const isDeleted = Boolean(message.deletedAt);
 
+  // User adjustment #2: Look up decrypted reply content from messagesByConversationId or fallback cleanly
+  const replyContent = useMemo(() => {
+    if (!message.replyTo) return null;
+    const conversationMessages = useChatStore.getState().messagesByConversationId[message.conversationId] || [];
+    const source = conversationMessages.find((m) => m.id === message.replyTo!.id);
+    if (source && source.content) {
+      return source.content;
+    }
+    const rawContent = message.replyTo.content;
+    if (rawContent && rawContent.length > 50 && !rawContent.includes(' ')) {
+      return '🔒 Encrypted message';
+    }
+    return rawContent || 'Message';
+  }, [message.replyTo, message.conversationId]);
+
   const formatTime = (isoString: string | Date) => {
     try {
       const date = new Date(isoString);
@@ -186,7 +201,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                 {message.replyTo.senderName}
               </span>
               <p className="truncate italic">
-                {message.replyTo.content || 'Message'}
+                {replyContent}
               </p>
             </div>
           )}

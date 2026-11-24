@@ -21,6 +21,10 @@ import {
   EditMessageDto,
   CursorPaginationMeta,
   MessageReactionItem,
+  RegisterDeviceDto,
+  ReplenishPreKeysDto,
+  DeviceSummary,
+  UserKeyBundleResponse,
 } from '@chatterbox/shared';
 import { updateSocketToken } from './socket';
 
@@ -334,4 +338,45 @@ export const api = {
         method: 'DELETE',
       },
     ),
+
+  // Phase 3: E2EE & Device Encryption APIs
+  registerDevice: (dto: RegisterDeviceDto) =>
+    apiRequest<DeviceSummary>('/encryption/devices', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  getMyDevices: () =>
+    apiRequest<DeviceSummary[]>('/encryption/devices', {
+      method: 'GET',
+    }),
+
+  revokeDevice: (deviceId: string) =>
+    apiRequest<{ success: true }>(`/encryption/devices/${deviceId}`, {
+      method: 'DELETE',
+    }),
+
+  replenishPreKeys: (deviceId: string, dto: ReplenishPreKeysDto) =>
+    apiRequest<{ added: number }>(`/encryption/devices/${deviceId}/prekeys`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  getUserKeyBundles: (userId: string) =>
+    apiRequest<UserKeyBundleResponse>(`/encryption/users/${userId}/keys`, {
+      method: 'GET',
+    }),
+
+  enableConversationE2ee: (conversationId: string) =>
+    apiRequest<{ success: boolean; conversationId: string; isEncrypted: boolean }>(
+      `/encryption/conversations/${conversationId}/enable`,
+      {
+        method: 'POST',
+      },
+    ),
+
+  getSafetyNumber: (userId: string) =>
+    apiRequest<{ safetyNumber: string }>(`/encryption/users/${userId}/safety-number`, {
+      method: 'GET',
+    }),
 };
