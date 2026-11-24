@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ThemePreference {
+  DARK
+  LIGHT
+  SYSTEM
+}
+
+enum PresenceStatus {
+  ONLINE
+  AWAY
+  IN_CALL
+  OFFLINE
+}
+
+enum ProfileVisibility {
+  PUBLIC
+  FOLLOWERS_ONLY
+  PRIVATE
+}
+
+model User {
+  id              String         @id @default(cuid())
+  email           String         @unique
+  username        String         @unique
+  passwordHash    String
+  emailVerifiedAt DateTime?
+  isActive        Boolean        @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  profile         Profile?
+  settings        UserSettings?
+  sessions        Session[]
+
+  // Phase 2 Relations (uncomment in Phase 2)
+  // memberships     ConversationMember[]
+  // messages        Message[]
+  // reactions       MessageReaction[]
+
+  @@index([email])
+  @@index([username])
+}
+
+model Profile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  displayName String
+  bio         String?  @db.VarChar(280)
+  avatarUrl   String?
+  bannerUrl   String?
+  location    String?  @db.VarChar(100)
+  tags        String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([displayName])
+}
+
+model UserSettings {
+  id                  String            @id @default(cuid())
+  userId              String            @unique
+  theme               ThemePreference   @default(DARK)
+  profileVisibility   ProfileVisibility @default(PUBLIC)
+  showOnlineStatus    Boolean           @default(true)
+  showReadReceipts    Boolean           @default(true)
+  allowDirectMessages Boolean           @default(true)
+  notifyNewMessages   Boolean           @default(true)
+  notifyMentions      Boolean           @default(true)
+  updatedAt           DateTime          @updatedAt
+
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  refreshTokenHash String    @unique
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
