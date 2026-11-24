@@ -62,21 +62,45 @@ export class MessagesService {
     conversationId: string,
     dto: SendMessageDto,
   ): Promise<MessageItem> {
-    // 1. Verify membership
-    const member = await this.prisma.conversationMember.findUnique({
-      where: {
-        conversationId_userId: {
-          conversationId,
-          userId: senderId,
+    // 1. Verify membership and retrieve conversation encryption status
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        members: {
+          where: { userId: senderId },
         },
       },
     });
 
-    if (!member) {
+    if (!conversation || conversation.members.length === 0) {
       throw new ForbiddenException({
         code: 'FORBIDDEN',
         message: 'You are not a member of this conversation.',
       });
+    }
+
+    // 2. Validate E2EE constraints
+    if (conversation.isEncrypted) {
+      if (!dto.isEncrypted || !dto.e2eeHeader || !dto.senderDeviceId) {
+        throw new BadRequestException(
+          'This conversation is end-to-end encrypted. Messages must be encrypted with valid e2eeHeader and senderDeviceId.'
+        );
+      }
+
+      // Verify senderDeviceId belongs to senderId and is not revoked
+      const device = await this.prisma.device.findUnique({
+        where: { id: dto.senderDeviceId },
+      });
+
+      if (!device || device.userId !== senderId || device.revokedAt !== null) {
+        throw new BadRequestException('Invalid or revoked senderDeviceId');
+      }
+    } else {
+      if (dto.isEncrypted) {
+        throw new BadRequestException(
+          'Cannot send encrypted message in a non-encrypted conversation'
+        );
+      }
     }
 
     try {
@@ -89,7 +113,10 @@ export class MessagesService {
             content: dto.content.trim(),
             type: (dto.type as any) || 'TEXT',
             replyToId: dto.replyToId,
-            isEncrypted: false,
+            isEncrypted: !!conversation.isEncrypted,
+            encryptionVersion: conversation.isEncrypted ? 1 : null,
+            senderDeviceId: conversation.isEncrypted ? dto.senderDeviceId : null,
+            e2eeHeader: conversation.isEncrypted ? (dto.e2eeHeader as any) : null,
           },
           include: messageInclude,
         });
@@ -180,7 +207,12 @@ export class MessagesService {
   ): Promise<MessageItem> {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
-      include: messageInclude,
+      include: {
+        ...messageInclude,
+        conversation: {
+          select: { isEncrypted: true },
+        },
+      },
     });
 
     if (!message) {
@@ -198,12 +230,31 @@ export class MessagesService {
       throw new BadRequestException('Cannot edit a deleted message');
     }
 
+    // Adjustment 2: If conversation isEncrypted, require fresh e2eeHeader and senderDeviceId
+    if (message.conversation.isEncrypted) {
+      if (!dto.e2eeHeader || !dto.senderDeviceId) {
+        throw new BadRequestException(
+          'Encrypted messages require updated e2eeHeader and senderDeviceId on edit'
+        );
+      }
+
+      const device = await this.prisma.device.findUnique({
+        where: { id: dto.senderDeviceId },
+      });
+
+      if (!device || device.userId !== userId || device.revokedAt !== null) {
+        throw new BadRequestException('Invalid or revoked senderDeviceId');
+      }
+    }
+
     const now = new Date();
     const updated = await this.prisma.message.update({
       where: { id: messageId },
       data: {
         content: dto.content.trim(),
         editedAt: now,
+        senderDeviceId: message.conversation.isEncrypted ? dto.senderDeviceId : undefined,
+        e2eeHeader: message.conversation.isEncrypted ? (dto.e2eeHeader as any) : undefined,
       },
       include: messageInclude,
     });
@@ -218,6 +269,8 @@ export class MessagesService {
         conversationId: updated.conversationId,
         content: updated.content,
         editedAt: now.toISOString(),
+        senderDeviceId: updated.senderDeviceId,
+        e2eeHeader: updated.e2eeHeader,
       },
     );
 
@@ -434,6 +487,9 @@ export class MessagesService {
       content: m.deletedAt !== null ? 'This message was deleted' : m.content,
       type: m.type,
       isEncrypted: m.isEncrypted,
+      encryptionVersion: m.encryptionVersion,
+      senderDeviceId: m.senderDeviceId,
+      e2eeHeader: m.e2eeHeader,
       replyToId: m.replyToId,
       replyTo: m.replyTo
         ? {

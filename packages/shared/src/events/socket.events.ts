@@ -31,6 +31,9 @@ export interface MessageSendPayload {
   content: string;
   replyToId?: string;
   type?: string;
+  isEncrypted?: boolean;
+  senderDeviceId?: string;
+  e2eeHeader?: any;
 }
 
 export interface MessageDeliveredPayload {
@@ -48,6 +51,8 @@ export interface MessageUpdatedPayload {
   conversationId: string;
   content: string;
   editedAt: string | Date;
+  senderDeviceId?: string | null;
+  e2eeHeader?: any | null;
 }
 
 export interface MessageDeletedPayload {

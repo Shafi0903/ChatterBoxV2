@@ -212,6 +212,9 @@ export class RealtimeGateway
           content: payload.content,
           replyToId: payload.replyToId,
           type: (payload.type as any) || 'TEXT',
+          isEncrypted: payload.isEncrypted,
+          senderDeviceId: payload.senderDeviceId,
+          e2eeHeader: payload.e2eeHeader,
         },
       );
 

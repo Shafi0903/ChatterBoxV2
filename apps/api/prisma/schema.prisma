@@ -66,6 +66,9 @@ model User {
   messages        Message[]
   reactions       MessageReaction[]
 
+  // Phase 3 Relations (E2EE Devices)
+  devices         Device[]
+
   @@index([email])
   @@index([username])
 }
@@ -162,23 +165,28 @@ model Message {
   senderId         String
   clientMessageId  String
   content          String
-  type             MessageType       @default(TEXT)
-  isEncrypted      Boolean           @default(false)
-  replyToId        String?
-  editedAt         DateTime?
-  deletedAt        DateTime?
-  createdAt        DateTime          @default(now())
+  type              MessageType       @default(TEXT)
+  isEncrypted       Boolean           @default(false)
+  encryptionVersion Int?              // 1 for Phase 3 E2EE
+  senderDeviceId    String?
+  e2eeHeader        Json?             // Ephemeral pubkey, IV, per-device wrapped keys
+  replyToId         String?
+  editedAt          DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime          @default(now())
 
-  conversation     Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender           User              @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  replyTo          Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies          Message[]         @relation("MessageReplies")
-  reactions        MessageReaction[]
-  receipts         MessageReceipt[]
+  conversation      Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender            User              @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  senderDevice      Device?           @relation("DeviceSentMessages", fields: [senderDeviceId], references: [id], onDelete: SetNull)
+  replyTo           Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies           Message[]         @relation("MessageReplies")
+  reactions         MessageReaction[]
+  receipts          MessageReceipt[]
 
   @@unique([senderId, clientMessageId])
   @@index([conversationId, createdAt])
   @@index([senderId])
+  @@index([senderDeviceId])
 }
 
 model MessageReaction {
@@ -209,4 +217,38 @@ model MessageReceipt {
   @@unique([messageId, memberId])
   @@index([messageId])
   @@index([memberId])
+}
+
+model Device {
+  id                    String            @id @default(cuid())
+  userId                String
+  deviceName            String
+  identityKeyPublic     String            // ECDH P-256 JWK string
+  signingKeyPublic      String            // ECDSA P-256 JWK string
+  signedPreKeyPublic    String            // ECDH P-256 JWK string
+  signedPreKeySignature String            // Base64 ECDSA signature over signedPreKeyPublic
+  lastActiveAt          DateTime          @default(now())
+  revokedAt             DateTime?
+  createdAt             DateTime          @default(now())
+
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oneTimePreKeys        OneTimePreKey[]
+  sentMessages          Message[]         @relation("DeviceSentMessages")
+
+  @@index([userId])
+  @@index([userId, revokedAt])
+}
+
+model OneTimePreKey {
+  id         String    @id @default(cuid())
+  deviceId   String
+  keyId      Int
+  publicKey  String    // ECDH P-256 JWK string
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  device     Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, keyId])
+  @@index([deviceId, consumedAt])
 }

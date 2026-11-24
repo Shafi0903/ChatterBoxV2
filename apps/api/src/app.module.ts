@@ -9,6 +9,7 @@ import { ProfilesModule } from './modules/profiles/profiles.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
+import { EncryptionModule } from './modules/encryption/encryption.module';
 import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard';
 
 @Module({
@@ -27,6 +28,7 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     ConversationsModule,
     MessagesModule,
     RealtimeModule,
+    EncryptionModule,
   ],
   providers: [
     {

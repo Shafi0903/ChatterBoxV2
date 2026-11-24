@@ -28,6 +28,9 @@ export interface MessageItem {
   content: string;
   type: MessageType;
   isEncrypted: boolean;
+  encryptionVersion?: number | null;
+  senderDeviceId?: string | null;
+  e2eeHeader?: any | null;
   replyToId: string | null;
   replyTo?: {
     id: string;
