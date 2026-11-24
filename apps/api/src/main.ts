@@ -4,12 +4,21 @@ import helmet from 'helmet';
 import * as cookieParser from 'cookie-parser';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { validateEnv } from './config/env.validation';
 
 async function bootstrap() {
+  // Validate environment variables on startup
+  validateEnv();
+
   const app = await NestFactory.create(AppModule);
 
-  // Security Headers
-  app.use(helmet());
+  // Security Headers (compatible with CORS & Socket.IO)
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      contentSecurityPolicy: false,
+    }),
+  );
 
   // Cookie Parser for refresh token cookie
   app.use(cookieParser());

@@ -8,6 +8,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { MediaService } from './media.service';
@@ -24,6 +25,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   @Post('presign')
   @HttpCode(HttpStatus.OK)
   async presignUpload(

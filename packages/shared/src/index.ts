@@ -11,6 +11,7 @@ export * from './types/notification.types';
 export * from './types/community.types';
 export * from './types/social.types';
 export * from './types/call.types';
+export * from './types/search.types';
 
 export * from './events/socket.events';
 
@@ -25,6 +26,7 @@ export * from './validation/notification.schema';
 export * from './validation/community.schema';
 export * from './validation/social.schema';
 export * from './validation/call.schema';
+export * from './validation/search.schema';
 
 export * from './crypto/e2ee';
 

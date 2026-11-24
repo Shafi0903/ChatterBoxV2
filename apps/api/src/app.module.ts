@@ -18,6 +18,8 @@ import { FollowsModule } from './modules/follows/follows.module';
 import { PostsModule } from './modules/posts/posts.module';
 import { StoriesModule } from './modules/stories/stories.module';
 import { CallsModule } from './modules/calls/calls.module';
+import { SearchModule } from './modules/search/search.module';
+import { HealthModule } from './modules/health/health.module';
 import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard';
 
 @Module({
@@ -25,7 +27,7 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
-        limit: 20,
+        limit: 60,
       },
     ]),
     PrismaModule,
@@ -45,6 +47,8 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     PostsModule,
     StoriesModule,
     CallsModule,
+    SearchModule,
+    HealthModule,
   ],
   providers: [
     {
