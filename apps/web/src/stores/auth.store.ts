@@ -12,6 +12,7 @@ import { useThemeStore } from './theme.store';
 import { useChatStore } from './chat.store';
 import { useNotificationStore } from './notification.store';
 import { useCommunityStore } from './community.store';
+import { useSocialStore } from './social.store';
 
 interface AuthState {
   user: SafeUser | null;
@@ -149,6 +150,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       useChatStore.getState().resetChatState();
       useNotificationStore.getState().resetNotificationState();
       useCommunityStore.getState().resetCommunityState();
+      useSocialStore.getState().resetSocialState();
       setAccessToken(null);
       set({
         user: null,

@@ -4,7 +4,7 @@ import React, { useRef, useEffect } from 'react';
 import { useNotificationStore } from '../../stores/notification.store';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../ui/Avatar';
-import { Bell, CheckCheck, Loader2, MessageSquare, UserPlus, Info } from 'lucide-react';
+import { Bell, CheckCheck, Loader2, MessageSquare, UserPlus, Info, Heart, MessageCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { NotificationType } from '@chatterbox/shared';
 
@@ -43,7 +43,11 @@ export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({ on
     }
     onClose();
 
-    if (notif.conversationId) {
+    if (notif.postId) {
+      router.push(`/posts/${notif.postId}`);
+    } else if (notif.type === 'NEW_FOLLOWER' && notif.actor?.username) {
+      router.push(`/profile/${notif.actor.username}`);
+    } else if (notif.conversationId) {
       router.push(`/messages?c=${notif.conversationId}`);
     }
   };
@@ -75,6 +79,12 @@ export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({ on
         return <UserPlus className="w-3.5 h-3.5 text-emerald-400" />;
       case 'MENTION':
         return <span className="text-[11px] font-bold text-accent">@</span>;
+      case 'NEW_FOLLOWER':
+        return <UserPlus className="w-3.5 h-3.5 text-cyan-400" />;
+      case 'POST_LIKE':
+        return <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500" />;
+      case 'POST_COMMENT':
+        return <MessageCircle className="w-3.5 h-3.5 text-indigo-400" />;
       default:
         return <Info className="w-3.5 h-3.5 text-muted" />;
     }

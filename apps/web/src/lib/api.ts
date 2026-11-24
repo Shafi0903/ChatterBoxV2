@@ -45,6 +45,15 @@ import {
   UpdateChannelDto,
   SendChannelMessageDto,
   EditChannelMessageDto,
+  FollowUserSummary,
+  PostItem,
+  PostCommentItem,
+  StoryItem,
+  AuthorStoriesGroup,
+  StoryViewerItem,
+  CreatePostDto,
+  CreateCommentDto,
+  CreateStoryDto,
 } from '@chatterbox/shared';
 import { updateSocketToken } from './socket';
 
@@ -557,6 +566,136 @@ export const api = {
 
   deleteChannelMessage: (messageId: string) =>
     apiRequest<{ success: boolean }>(`/channels/messages/${messageId}`, {
+      method: 'DELETE',
+    }),
+
+  // Phase 6: Social Graph, Posts, Likes, Comments & Stories APIs
+  followUser: (userId: string) =>
+    apiRequest<{ success: boolean; isFollowing: boolean }>(`/users/${userId}/follow`, {
+      method: 'POST',
+    }),
+
+  unfollowUser: (userId: string) =>
+    apiRequest<{ success: boolean; isFollowing: boolean }>(`/users/${userId}/follow`, {
+      method: 'DELETE',
+    }),
+
+  getFollowers: (userId: string, cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: FollowUserSummary[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/users/${userId}/followers${qStr ? `?${qStr}` : ''}`, { method: 'GET' });
+  },
+
+  getFollowing: (userId: string, cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: FollowUserSummary[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/users/${userId}/following${qStr ? `?${qStr}` : ''}`, { method: 'GET' });
+  },
+
+  createPost: (dto: CreatePostDto) =>
+    apiRequest<PostItem>('/posts', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  getPostsFeed: (tab: 'following' | 'explore' = 'following', cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    params.append('tab', tab);
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: PostItem[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/posts/feed?${qStr}`, { method: 'GET' });
+  },
+
+  getUserPosts: (userId: string, cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: PostItem[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/posts/user/${userId}${qStr ? `?${qStr}` : ''}`, { method: 'GET' });
+  },
+
+  getPost: (postId: string) =>
+    apiRequest<PostItem>(`/posts/${postId}`, {
+      method: 'GET',
+    }),
+
+  deletePost: (postId: string) =>
+    apiRequest<{ success: boolean }>(`/posts/${postId}`, {
+      method: 'DELETE',
+    }),
+
+  likePost: (postId: string) =>
+    apiRequest<{ success: boolean; isLiked: boolean; likesCount: number }>(`/posts/${postId}/like`, {
+      method: 'POST',
+    }),
+
+  unlikePost: (postId: string) =>
+    apiRequest<{ success: boolean; isLiked: boolean; likesCount: number }>(`/posts/${postId}/like`, {
+      method: 'DELETE',
+    }),
+
+  getPostComments: (postId: string, cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: PostCommentItem[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/posts/${postId}/comments${qStr ? `?${qStr}` : ''}`, { method: 'GET' });
+  },
+
+  createPostComment: (postId: string, dto: CreateCommentDto) =>
+    apiRequest<PostCommentItem>(`/posts/${postId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  deletePostComment: (commentId: string) =>
+    apiRequest<{ success: boolean }>(`/posts/comments/${commentId}`, {
+      method: 'DELETE',
+    }),
+
+  createStory: (dto: CreateStoryDto) =>
+    apiRequest<StoryItem>('/stories', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  getStoriesFeed: () =>
+    apiRequest<AuthorStoriesGroup[]>('/stories/feed', {
+      method: 'GET',
+    }),
+
+  markStoryViewed: (storyId: string) =>
+    apiRequest<{ success: boolean }>(`/stories/${storyId}/view`, {
+      method: 'POST',
+    }),
+
+  getStoryViews: (storyId: string) =>
+    apiRequest<{ data: StoryViewerItem[]; meta: { totalCount: number } }>(`/stories/${storyId}/views`, {
+      method: 'GET',
+    }),
+
+  deleteStory: (storyId: string) =>
+    apiRequest<{ success: boolean }>(`/stories/${storyId}`, {
       method: 'DELETE',
     }),
 };

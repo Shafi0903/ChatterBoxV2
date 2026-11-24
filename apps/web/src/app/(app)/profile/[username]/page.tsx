@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   MapPin,
@@ -8,17 +8,20 @@ import {
   Edit3,
   MessageSquare,
   UserPlus,
+  UserCheck,
   Layers,
-  Image,
+  Image as ImageIcon,
   Bookmark,
 } from 'lucide-react';
-import { PublicProfileResponse } from '@chatterbox/shared';
+import { PublicProfileResponse, PostItem } from '@chatterbox/shared';
 import { api, ApiError } from '../../../../lib/api';
 import { useAuthStore } from '../../../../stores/auth.store';
 import { Avatar } from '../../../../components/ui/Avatar';
 import { Button } from '../../../../components/ui/Button';
 import { Skeleton } from '../../../../components/ui/Skeleton';
 import { EditProfileModal } from '../../../../components/profile/EditProfileModal';
+import { FollowListModal } from '../../../../components/profile/FollowListModal';
+import { PostCard } from '../../../../components/social/PostCard';
 
 export default function UserProfilePage() {
   const params = useParams();
@@ -31,32 +34,30 @@ export default function UserProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'posts' | 'stories' | 'saved'>('posts');
-  const [roadmapMessage, setRoadmapMessage] = useState<string | null>(null);
   const [isStartingDm, setIsStartingDm] = useState(false);
 
-  const handleStartMessage = async () => {
-    if (!profileData?.userId) return;
-    setIsStartingDm(true);
-    try {
-      const conv = await api.createDm(profileData.userId);
-      router.push(`/messages?c=${conv.id}`);
-    } catch {
-      setRoadmapMessage('Failed to start conversation. Please try again.');
-    } finally {
-      setIsStartingDm(false);
-    }
-  };
+  // Social Phase 6 state
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followActionLoading, setFollowActionLoading] = useState(false);
+  const [followModalType, setFollowModalType] = useState<'followers' | 'following' | null>(null);
+
+  // User posts state
+  const [userPosts, setUserPosts] = useState<PostItem[]>([]);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [postsCursor, setPostsCursor] = useState<string | null>(null);
+  const [postsHasMore, setPostsHasMore] = useState(false);
 
   const isOwnProfile =
     currentUser?.username?.toLowerCase() === currentUsername?.toLowerCase();
 
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     if (!currentUsername) return;
     setIsLoading(true);
     setError(null);
     try {
       const data = await api.getProfile(currentUsername);
       setProfileData(data);
+      setIsFollowing(Boolean(data.isFollowing));
     } catch (err) {
       if (err instanceof ApiError && err.code === 'NOT_FOUND') {
         setError(`User '@${currentUsername}' does not exist.`);
@@ -66,11 +67,96 @@ export default function UserProfilePage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [currentUsername]);
+
+  const loadUserPosts = useCallback(async (userId: string, cursor?: string) => {
+    try {
+      setPostsLoading(true);
+      const res = await api.getUserPosts(userId, cursor, 10);
+      if (cursor) {
+        setUserPosts((prev) => [...prev, ...res.data]);
+      } else {
+        setUserPosts(res.data);
+      }
+      setPostsCursor(res.meta?.nextCursor ?? null);
+      setPostsHasMore(res.meta?.hasMore ?? false);
+    } catch (err) {
+      console.error('Failed to load user posts', err);
+    } finally {
+      setPostsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadProfile();
-  }, [currentUsername]);
+  }, [loadProfile]);
+
+  useEffect(() => {
+    if (profileData?.userId && activeTab === 'posts') {
+      loadUserPosts(profileData.userId);
+    }
+  }, [profileData?.userId, activeTab, loadUserPosts]);
+
+  const handleStartMessage = async () => {
+    if (!profileData?.userId) return;
+    setIsStartingDm(true);
+    try {
+      const conv = await api.createDm(profileData.userId);
+      router.push(`/messages?c=${conv.id}`);
+    } catch {
+      alert('Failed to start conversation. Please try again.');
+    } finally {
+      setIsStartingDm(false);
+    }
+  };
+
+  const handleToggleFollow = async () => {
+    if (!profileData?.userId || followActionLoading) return;
+    const previous = isFollowing;
+    const delta = previous ? -1 : 1;
+
+    // Optimistic toggle
+    setIsFollowing(!previous);
+    setProfileData((prev) =>
+      prev
+        ? {
+            ...prev,
+            isFollowing: !previous,
+            counts: {
+              ...prev.counts,
+              followers: Math.max(0, prev.counts.followers + delta),
+            },
+          }
+        : null
+    );
+    setFollowActionLoading(true);
+
+    try {
+      if (previous) {
+        await api.unfollowUser(profileData.userId);
+      } else {
+        await api.followUser(profileData.userId);
+      }
+    } catch (err) {
+      // Revert
+      setIsFollowing(previous);
+      setProfileData((prev) =>
+        prev
+          ? {
+              ...prev,
+              isFollowing: previous,
+              counts: {
+                ...prev.counts,
+                followers: Math.max(0, prev.counts.followers - delta),
+              },
+            }
+          : null
+      );
+      alert('Failed to update follow status');
+    } finally {
+      setFollowActionLoading(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -122,25 +208,11 @@ export default function UserProfilePage() {
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-12">
-      {/* Roadmap message toast */}
-      {roadmapMessage && (
-        <div className="p-3 bg-accent/15 border border-accent/30 rounded-xl text-accent-bright text-xs flex items-center justify-between">
-          <span>{roadmapMessage}</span>
-          <button
-            onClick={() => setRoadmapMessage(null)}
-            className="text-accent-bright font-bold px-2 py-0.5 rounded hover:bg-accent/20"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       {/* Header Card */}
       <div className="bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
         {/* Banner */}
         <div className="h-44 w-full bg-gradient-to-r from-accent/30 via-accent-bright/20 to-elevated relative overflow-hidden">
           {profileData.bannerUrl && (
-            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={profileData.bannerUrl}
               alt="Profile banner"
@@ -152,7 +224,6 @@ export default function UserProfilePage() {
         {/* Identity & Actions Bar */}
         <div className="p-6 pt-0 relative">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 -mt-12 sm:-mt-16 mb-4">
-            {/* Avatar: User adjustment #2: Do NOT render a static online dot on other users' profiles */}
             <div className="relative">
               <Avatar
                 name={profileData.displayName}
@@ -187,18 +258,25 @@ export default function UserProfilePage() {
                     <MessageSquare className="w-3.5 h-3.5" />
                     <span>{isStartingDm ? 'Opening...' : 'Message'}</span>
                   </Button>
+
                   <Button
-                    variant="secondary"
+                    variant={isFollowing ? 'secondary' : 'primary'}
                     size="sm"
-                    onClick={() =>
-                      setRoadmapMessage(
-                        'Social graph and one-way following will arrive in Phase 6.',
-                      )
-                    }
+                    onClick={handleToggleFollow}
+                    disabled={followActionLoading}
                     className="gap-1.5"
                   >
-                    <UserPlus className="w-3.5 h-3.5" />
-                    <span>Follow</span>
+                    {isFollowing ? (
+                      <>
+                        <UserCheck className="w-3.5 h-3.5" />
+                        <span>Following</span>
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Follow</span>
+                      </>
+                    )}
                   </Button>
                 </div>
               )}
@@ -250,7 +328,7 @@ export default function UserProfilePage() {
               </div>
             )}
 
-            {/* Real Metrics Bar: Honest Zero Values from DB */}
+            {/* Real Social Metrics Bar with Clickable Follow Modals */}
             <div className="flex items-center gap-6 mt-5 pt-4 border-t border-border">
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="font-bold text-primary">
@@ -258,18 +336,26 @@ export default function UserProfilePage() {
                 </span>
                 <span className="text-muted">Posts</span>
               </div>
-              <div className="flex items-center gap-1.5 text-xs">
+
+              <button
+                onClick={() => setFollowModalType('followers')}
+                className="flex items-center gap-1.5 text-xs hover:text-cyan-400 transition-colors"
+              >
                 <span className="font-bold text-primary">
                   {profileData.counts.followers}
                 </span>
                 <span className="text-muted">Followers</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-xs">
+              </button>
+
+              <button
+                onClick={() => setFollowModalType('following')}
+                className="flex items-center gap-1.5 text-xs hover:text-cyan-400 transition-colors"
+              >
                 <span className="font-bold text-primary">
                   {profileData.counts.following}
                 </span>
                 <span className="text-muted">Following</span>
-              </div>
+              </button>
             </div>
           </div>
         </div>
@@ -286,7 +372,7 @@ export default function UserProfilePage() {
                 : 'border-transparent text-secondary hover:text-primary'
             }`}
           >
-            <Image className="w-4 h-4" />
+            <ImageIcon className="w-4 h-4" />
             <span>Posts</span>
           </button>
           <button
@@ -313,43 +399,107 @@ export default function UserProfilePage() {
           </button>
         </div>
 
-        {/* Tab Content: Honest Empty States */}
-        <div className="p-12 text-center bg-surface border border-border rounded-2xl">
-          {activeTab === 'posts' && (
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted">
-                <Image className="w-5 h-5" />
+        {/* Tab Content */}
+        {activeTab === 'posts' && (
+          <div className="space-y-4">
+            {postsLoading && userPosts.length === 0 ? (
+              <div className="p-12 text-center bg-surface border border-border rounded-2xl">
+                <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                <p className="text-xs text-muted">Loading posts...</p>
               </div>
-              <p className="text-sm font-medium text-primary">No posts yet</p>
-              <p className="text-xs text-muted max-w-sm">
-                Social feeds, image posts, and community discussions unlock in Phase 6.
-              </p>
-            </div>
-          )}
-          {activeTab === 'stories' && (
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted">
-                <Layers className="w-5 h-5" />
+            ) : userPosts.length === 0 ? (
+              <div className="p-12 text-center bg-surface border border-border rounded-2xl">
+                <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted mx-auto mb-2">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+                <p className="text-sm font-medium text-primary">No posts yet</p>
+                <p className="text-xs text-muted max-w-sm mx-auto mt-1">
+                  {isOwnProfile
+                    ? 'Publish your first post on the Home feed to see it here.'
+                    : `@${profileData.username} hasn't posted anything yet.`}
+                </p>
               </div>
-              <p className="text-sm font-medium text-primary">No active stories</p>
-              <p className="text-xs text-muted max-w-sm">
-                24-hour ephemeral stories unlock in Phase 6.
-              </p>
+            ) : (
+              <>
+                {userPosts.map((post) => (
+                  <PostCard
+                    key={post.id}
+                    post={post}
+                    onPostDeleted={(deletedId) => {
+                      setUserPosts((prev) => prev.filter((p) => p.id !== deletedId));
+                      setProfileData((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              counts: {
+                                ...prev.counts,
+                                posts: Math.max(0, prev.counts.posts - 1),
+                              },
+                            }
+                          : null
+                      );
+                    }}
+                    onPostUpdated={(updated) => {
+                      setUserPosts((prev) =>
+                        prev.map((p) => (p.id === updated.id ? updated : p))
+                      );
+                    }}
+                  />
+                ))}
+
+                {postsHasMore && (
+                  <div className="text-center pt-2">
+                    <button
+                      onClick={() =>
+                        profileData?.userId &&
+                        loadUserPosts(profileData.userId, postsCursor ?? undefined)
+                      }
+                      disabled={postsLoading}
+                      className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-semibold text-zinc-300 hover:text-white"
+                    >
+                      {postsLoading ? 'Loading...' : 'Load more posts'}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'stories' && (
+          <div className="p-12 text-center bg-surface border border-border rounded-2xl">
+            <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted mx-auto mb-2">
+              <Layers className="w-5 h-5" />
             </div>
-          )}
-          {activeTab === 'saved' && (
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted">
-                <Bookmark className="w-5 h-5" />
-              </div>
-              <p className="text-sm font-medium text-primary">Nothing saved</p>
-              <p className="text-xs text-muted max-w-sm">
-                Bookmark posts and messages when messaging and feed features go live.
-              </p>
+            <p className="text-sm font-medium text-primary">Active Stories</p>
+            <p className="text-xs text-muted max-w-sm mx-auto mt-1">
+              Active stories appear in the 24-hour stories tray on your Home feed.
+            </p>
+          </div>
+        )}
+
+        {activeTab === 'saved' && (
+          <div className="p-12 text-center bg-surface border border-border rounded-2xl">
+            <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted mx-auto mb-2">
+              <Bookmark className="w-5 h-5" />
             </div>
-          )}
-        </div>
+            <p className="text-sm font-medium text-primary">Nothing saved</p>
+            <p className="text-xs text-muted max-w-sm mx-auto mt-1">
+              Bookmark posts to easily find them later.
+            </p>
+          </div>
+        )}
       </div>
+
+      {/* Followers / Following Modal */}
+      {followModalType && (
+        <FollowListModal
+          userId={profileData.userId}
+          type={followModalType}
+          onClose={() => setFollowModalType(null)}
+          onFollowCountChange={() => loadProfile()}
+        />
+      )}
 
       {/* Edit Profile Modal */}
       {isOwnProfile && (
