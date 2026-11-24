@@ -5,12 +5,15 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useAuthStore } from '../../stores/auth.store';
 import { useChatStore } from '../../stores/chat.store';
 import { useNotificationStore } from '../../stores/notification.store';
+import { useCallStore } from '../../stores/call.store';
 import { connectSocket } from '../../lib/socket';
 import { initializeDeviceKeys } from '../../lib/e2eeManager';
 import { Sidebar } from '../../components/layout/Sidebar';
 import { TopBar } from '../../components/layout/TopBar';
 import { MobileNav } from '../../components/layout/MobileNav';
 import { SearchModal } from '../../components/layout/SearchModal';
+import { IncomingCallModal } from '../../components/calls/IncomingCallModal';
+import { ActiveCallOverlay } from '../../components/calls/ActiveCallOverlay';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { cn } from '../../lib/utils';
 
@@ -30,6 +33,7 @@ export default function AppLayout({
       connectSocket();
       useChatStore.getState().initSocketListeners();
       useNotificationStore.getState().initSocketListeners();
+      useCallStore.getState().initSocketListeners();
       useNotificationStore.getState().fetchNotifications();
       initializeDeviceKeys(user).then(() => {
         useChatStore.getState().fetchConversations();
@@ -127,6 +131,10 @@ export default function AppLayout({
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
       />
+
+      {/* Global WebRTC Audio/Video Call Overlays */}
+      <IncomingCallModal />
+      <ActiveCallOverlay />
     </div>
   );
 }

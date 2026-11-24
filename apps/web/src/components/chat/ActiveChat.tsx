@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { ConversationMemberItem } from '@chatterbox/shared';
+import { ConversationMemberItem, CallType } from '@chatterbox/shared';
 import { useAuthStore } from '../../stores/auth.store';
 import { useChatStore } from '../../stores/chat.store';
+import { useCallStore } from '../../stores/call.store';
 import { MessageFeed } from './MessageFeed';
 import { MessageComposer } from './MessageComposer';
 import { SafetyNumberModal } from './SafetyNumberModal';
@@ -15,6 +16,8 @@ import {
   Lock,
   Shield,
   Loader2,
+  Phone,
+  Video,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -176,6 +179,32 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
 
         {/* Header Right Actions */}
         <div className="flex items-center gap-2">
+          {/* Phase 7 1:1 Voice & Video Call Buttons */}
+          {isDm && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={useCallStore.getState().status !== 'idle'}
+                onClick={() => useCallStore.getState().initiateCall(conversationId, CallType.AUDIO)}
+                className="p-2 rounded-xl text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                title="Start Voice Call"
+                aria-label="Start Voice Call"
+              >
+                <Phone className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                disabled={useCallStore.getState().status !== 'idle'}
+                onClick={() => useCallStore.getState().initiateCall(conversationId, CallType.VIDEO)}
+                className="p-2 rounded-xl text-secondary hover:text-accent-bright hover:bg-accent/15 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                title="Start Video Call"
+                aria-label="Start Video Call"
+              >
+                <Video className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* E2EE Controls for 1:1 DMs */}
           {isDm && (
             <>

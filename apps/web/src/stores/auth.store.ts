@@ -13,6 +13,7 @@ import { useChatStore } from './chat.store';
 import { useNotificationStore } from './notification.store';
 import { useCommunityStore } from './community.store';
 import { useSocialStore } from './social.store';
+import { useCallStore } from './call.store';
 
 interface AuthState {
   user: SafeUser | null;
@@ -151,6 +152,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       useNotificationStore.getState().resetNotificationState();
       useCommunityStore.getState().resetCommunityState();
       useSocialStore.getState().resetSocialState();
+      useCallStore.getState().resetCallState();
       setAccessToken(null);
       set({
         user: null,

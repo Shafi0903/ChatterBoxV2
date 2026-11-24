@@ -4,7 +4,7 @@ import React, { useRef, useEffect } from 'react';
 import { useNotificationStore } from '../../stores/notification.store';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../ui/Avatar';
-import { Bell, CheckCheck, Loader2, MessageSquare, UserPlus, Info, Heart, MessageCircle } from 'lucide-react';
+import { Bell, CheckCheck, Loader2, MessageSquare, UserPlus, Info, Heart, MessageCircle, PhoneMissed } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { NotificationType } from '@chatterbox/shared';
 
@@ -85,6 +85,8 @@ export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({ on
         return <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500" />;
       case 'POST_COMMENT':
         return <MessageCircle className="w-3.5 h-3.5 text-indigo-400" />;
+      case 'MISSED_CALL':
+        return <PhoneMissed className="w-3.5 h-3.5 text-rose-400" />;
       default:
         return <Info className="w-3.5 h-3.5 text-muted" />;
     }

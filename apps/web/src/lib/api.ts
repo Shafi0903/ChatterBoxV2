@@ -54,6 +54,8 @@ import {
   CreatePostDto,
   CreateCommentDto,
   CreateStoryDto,
+  IceServersResponse,
+  PaginatedCallsResponse,
 } from '@chatterbox/shared';
 import { updateSocketToken } from './socket';
 
@@ -698,4 +700,31 @@ export const api = {
     apiRequest<{ success: boolean }>(`/stories/${storyId}`, {
       method: 'DELETE',
     }),
+
+  // Phase 7 WebRTC Calls
+  getIceServers: () =>
+    apiRequest<IceServersResponse>('/calls/ice-servers', {
+      method: 'GET',
+    }),
+
+  getCallHistory: (cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<PaginatedCallsResponse>(`/calls/history${qStr ? `?${qStr}` : ''}`, {
+      method: 'GET',
+    });
+  },
+
+  getConversationCallHistory: (conversationId: string, cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<PaginatedCallsResponse>(
+      `/conversations/${conversationId}/calls${qStr ? `?${qStr}` : ''}`,
+      { method: 'GET' },
+    );
+  },
 };
