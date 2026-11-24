@@ -25,6 +25,12 @@ import {
   ReplenishPreKeysDto,
   DeviceSummary,
   UserKeyBundleResponse,
+  PresignUploadInput,
+  PresignUploadResponse,
+  MediaAttachmentItem,
+  MediaDownloadUrlResponse,
+  NotificationItem,
+  PaginatedNotificationsResponse,
 } from '@chatterbox/shared';
 import { updateSocketToken } from './socket';
 
@@ -378,5 +384,43 @@ export const api = {
   getSafetyNumber: (userId: string) =>
     apiRequest<{ safetyNumber: string }>(`/encryption/users/${userId}/safety-number`, {
       method: 'GET',
+    }),
+
+  // Phase 4: Media & Notifications APIs
+  presignUpload: (dto: PresignUploadInput) =>
+    apiRequest<PresignUploadResponse>('/media/presign', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  confirmUpload: (attachmentId: string) =>
+    apiRequest<MediaAttachmentItem>(`/media/${attachmentId}/confirm`, {
+      method: 'POST',
+    }),
+
+  getMediaDownloadUrl: (attachmentId: string) =>
+    apiRequest<MediaDownloadUrlResponse>(`/media/${attachmentId}/url`, {
+      method: 'GET',
+    }),
+
+  getNotifications: (cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const query = params.toString();
+    return apiRequest<PaginatedNotificationsResponse>(
+      `/notifications${query ? `?${query}` : ''}`,
+      { method: 'GET' },
+    );
+  },
+
+  markNotificationRead: (id: string) =>
+    apiRequest<NotificationItem>(`/notifications/${id}/read`, {
+      method: 'PATCH',
+    }),
+
+  markAllNotificationsRead: () =>
+    apiRequest<{ success: boolean; count: number }>('/notifications/read-all', {
+      method: 'POST',
     }),
 };

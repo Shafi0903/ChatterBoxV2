@@ -5,6 +5,8 @@ import { Bell } from 'lucide-react';
 import NextLink from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
 import { useThemeStore } from '../../stores/theme.store';
+import { useNotificationStore } from '../../stores/notification.store';
+import { NotificationsDropdown } from '../notifications/NotificationsDropdown';
 import { Avatar } from '../ui/Avatar';
 import { api } from '../../lib/api';
 
@@ -16,6 +18,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const { user, profile, settings, updateSettingsState } = useAuthStore();
   const { resolvedTheme, setTheme } = useThemeStore();
   const [showNotifications, setShowNotifications] = useState(false);
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
 
   const toggleTheme = async () => {
     const nextTheme = resolvedTheme === 'dark' ? 'LIGHT' : 'DARK';
@@ -99,25 +102,16 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
             className="p-2 rounded-xl text-secondary hover:text-primary hover:bg-surface-hover border border-transparent hover:border-border transition-colors relative"
           >
             <Bell className="w-4 h-4" />
-            {/* Zero fake badges: badge is hidden because unread count is 0 */}
+            {/* Real Unread Count Badge */}
+            {unreadCount > 0 && (
+              <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-accent text-[9px] font-bold text-white flex items-center justify-center leading-none shadow-sm">
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
           </button>
 
           {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 bg-surface border border-border rounded-2xl shadow-2xl p-4 z-50 animate-in fade-in zoom-in-95 duration-100">
-              <div className="flex items-center justify-between pb-2 border-b border-border mb-3">
-                <span className="text-xs font-semibold text-primary">Notifications</span>
-                <span className="text-[10px] text-muted">Phase 4 Roadmap</span>
-              </div>
-              <div className="py-6 flex flex-col items-center justify-center text-center gap-2">
-                <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted">
-                  <Bell className="w-5 h-5" />
-                </div>
-                <p className="text-xs font-medium text-primary">You&apos;re all caught up</p>
-                <p className="text-[11px] text-muted max-w-[200px]">
-                  Real-time notifications for messages and mentions arrive in Phase 4.
-                </p>
-              </div>
-            </div>
+            <NotificationsDropdown onClose={() => setShowNotifications(false)} />
           )}
         </div>
 

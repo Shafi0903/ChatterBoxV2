@@ -55,9 +55,17 @@ export const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   };
 
-  const lastMessageText = conversation.lastMessage
-    ? conversation.lastMessage.content
-    : 'No messages yet';
+  const getLastMessagePreview = () => {
+    if (!conversation.lastMessage) return 'No messages yet';
+    const content = conversation.lastMessage.content;
+    if (content && content.trim()) {
+      return content;
+    }
+    // Handle captionless media preview based on type or fallback
+    return '📎 Attachment';
+  };
+
+  const lastMessageText = getLastMessagePreview();
 
   const hasUnread = (conversation.unreadCount || 0) > 0;
 

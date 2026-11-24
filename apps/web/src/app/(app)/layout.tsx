@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuthStore } from '../../stores/auth.store';
 import { useChatStore } from '../../stores/chat.store';
+import { useNotificationStore } from '../../stores/notification.store';
 import { connectSocket } from '../../lib/socket';
 import { initializeDeviceKeys } from '../../lib/e2eeManager';
 import { Sidebar } from '../../components/layout/Sidebar';
@@ -23,11 +24,13 @@ export default function AppLayout({
   const { user, isInitialized } = useAuthStore();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
-  // App-Shell Real-Time Lifecycle: connect socket, initialize E2EE device keys, and load conversations on auth hydration
+  // App-Shell Real-Time Lifecycle: connect socket, initialize E2EE device keys, notifications, and load conversations on auth hydration
   useEffect(() => {
     if (isInitialized && user) {
       connectSocket();
       useChatStore.getState().initSocketListeners();
+      useNotificationStore.getState().initSocketListeners();
+      useNotificationStore.getState().fetchNotifications();
       initializeDeviceKeys(user).then(() => {
         useChatStore.getState().fetchConversations();
       });

@@ -10,6 +10,7 @@ import { api, setAccessToken } from '../lib/api';
 import { disconnectSocket } from '../lib/socket';
 import { useThemeStore } from './theme.store';
 import { useChatStore } from './chat.store';
+import { useNotificationStore } from './notification.store';
 
 interface AuthState {
   user: SafeUser | null;
@@ -145,6 +146,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } finally {
       disconnectSocket();
       useChatStore.getState().resetChatState();
+      useNotificationStore.getState().resetNotificationState();
       setAccessToken(null);
       set({
         user: null,

@@ -14,6 +14,7 @@ import {
   Smile,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { AttachmentList } from './AttachmentList';
 
 interface MessageBubbleProps {
   message: MessageItem;
@@ -210,7 +211,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           {isDeleted ? (
             <span className="italic opacity-60">This message was deleted</span>
           ) : (
-            <p className="whitespace-pre-wrap">{message.content}</p>
+            <>
+              {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+              {message.attachments && message.attachments.length > 0 && (
+                <AttachmentList attachments={message.attachments} />
+              )}
+            </>
           )}
 
           {/* Footer Metadata */}

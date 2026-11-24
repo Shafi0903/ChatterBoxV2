@@ -47,7 +47,13 @@ interface ChatState {
   fetchConversations: (filter?: 'all' | 'dm' | 'group') => Promise<void>;
   selectConversation: (id: string | null) => Promise<void>;
   fetchOlderMessages: (conversationId: string) => Promise<void>;
-  sendMessage: (conversationId: string, content: string, replyToId?: string) => Promise<void>;
+  sendMessage: (
+    conversationId: string,
+    content: string,
+    replyToId?: string,
+    attachmentIds?: string[],
+    stagedAttachments?: any[],
+  ) => Promise<void>;
   retryMessage: (conversationId: string, clientMessageId: string) => Promise<void>;
   editMessage: (messageId: string, content: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
@@ -283,7 +289,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (conversationId, content, replyToId) => {
+  sendMessage: async (
+    conversationId,
+    content,
+    replyToId,
+    attachmentIds,
+    stagedAttachments,
+  ) => {
     const authUser = useAuthStore.getState().user;
     const authProfile = useAuthStore.getState().profile;
     if (!authUser) return;
@@ -322,6 +334,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     }
 
+    let inferredType: any = 'TEXT';
+    if (stagedAttachments && stagedAttachments.length > 0) {
+      const mime = stagedAttachments[0].mimeType || '';
+      if (mime.startsWith('image/')) inferredType = 'IMAGE';
+      else if (mime.startsWith('video/')) inferredType = 'VIDEO';
+      else if (mime.startsWith('audio/')) inferredType = 'AUDIO';
+      else inferredType = 'FILE';
+    }
+
     const clientMessageId = crypto.randomUUID();
     const optimisticMessage: MessageItem = {
       id: clientMessageId,
@@ -335,7 +356,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
       clientMessageId,
       content, // User adjustment #2: Always keep plaintext content in optimistic message so bubble doesn't flash ciphertext
-      type: 'TEXT',
+      type: inferredType,
+      attachments: stagedAttachments || [],
       isEncrypted,
       senderDeviceId,
       e2eeHeader,
@@ -369,7 +391,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
 
-    const sendPayload = {
+    const sendPayload: any = {
       conversationId,
       clientMessageId,
       content: ciphertextPayload,
@@ -378,6 +400,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       senderDeviceId,
       e2eeHeader,
     };
+
+    if (attachmentIds && attachmentIds.length > 0) {
+      sendPayload.attachmentIds = attachmentIds;
+    }
 
     const socket = getSocket();
     if (socket && socket.connected) {
