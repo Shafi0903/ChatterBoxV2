@@ -15,6 +15,7 @@ import {
 } from '@chatterbox/shared';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const messageInclude = {
   sender: {
@@ -43,6 +44,7 @@ const messageInclude = {
     },
   },
   reactions: true,
+  attachments: true,
 };
 
 @Injectable()
@@ -51,6 +53,7 @@ export class MessagesService {
     private prisma: PrismaService,
     @Inject(forwardRef(() => RealtimeService))
     private realtimeService: RealtimeService,
+    private notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -103,6 +106,43 @@ export class MessagesService {
       }
     }
 
+    // Verify attachment IDs if provided (Adjustment 1 & 2)
+    let verifiedAttachments: any[] = [];
+    let inferredType: any = dto.type || 'TEXT';
+
+    if (dto.attachmentIds && dto.attachmentIds.length > 0) {
+      verifiedAttachments = await this.prisma.mediaAttachment.findMany({
+        where: {
+          id: { in: dto.attachmentIds },
+        },
+      });
+
+      if (verifiedAttachments.length !== dto.attachmentIds.length) {
+        throw new BadRequestException('One or more attachments not found');
+      }
+
+      for (const att of verifiedAttachments) {
+        if (att.uploaderId !== senderId) {
+          throw new ForbiddenException('Cannot attach media uploaded by another user');
+        }
+        if (att.status !== 'READY') {
+          throw new BadRequestException('Cannot attach media that is not READY');
+        }
+        if (att.messageId !== null) {
+          throw new BadRequestException('Attachment is already linked to another message');
+        }
+      }
+
+      // Infer type from first attachment if type not explicitly provided
+      if (!dto.type) {
+        const firstMime = verifiedAttachments[0].mimeType;
+        if (firstMime.startsWith('image/')) inferredType = 'IMAGE';
+        else if (firstMime.startsWith('video/')) inferredType = 'VIDEO';
+        else if (firstMime.startsWith('audio/')) inferredType = 'AUDIO';
+        else inferredType = 'FILE';
+      }
+    }
+
     try {
       const message = await this.prisma.$transaction(async (tx) => {
         const msg = await tx.message.create({
@@ -110,8 +150,8 @@ export class MessagesService {
             conversationId,
             senderId,
             clientMessageId: dto.clientMessageId,
-            content: dto.content.trim(),
-            type: (dto.type as any) || 'TEXT',
+            content: (dto.content || '').trim(),
+            type: inferredType,
             replyToId: dto.replyToId,
             isEncrypted: !!conversation.isEncrypted,
             encryptionVersion: conversation.isEncrypted ? 1 : null,
@@ -121,12 +161,32 @@ export class MessagesService {
           include: messageInclude,
         });
 
+        // Link attachments to this message
+        if (verifiedAttachments.length > 0) {
+          await tx.mediaAttachment.updateMany({
+            where: {
+              id: { in: dto.attachmentIds },
+            },
+            data: {
+              messageId: msg.id,
+            },
+          });
+        }
+
         await tx.conversation.update({
           where: { id: conversationId },
           data: { lastMessageAt: msg.createdAt },
         });
 
-        return msg;
+        // Re-query message with linked attachments
+        const result = await tx.message.findUnique({
+          where: { id: msg.id },
+          include: messageInclude,
+        });
+        if (!result) {
+          throw new NotFoundException('Message not found after creation');
+        }
+        return result;
       });
 
       const messageItem = this.formatMessageItem(message);
@@ -137,6 +197,49 @@ export class MessagesService {
         SocketEvents.MESSAGE_NEW,
         { message: messageItem },
       );
+
+      // Trigger NEW_MESSAGE notification for all other conversation members
+      try {
+        const otherMembers = await this.prisma.conversationMember.findMany({
+          where: {
+            conversationId,
+            userId: { not: senderId },
+          },
+          select: { userId: true },
+        });
+
+        const senderUser = await this.prisma.user.findUnique({
+          where: { id: senderId },
+          select: { username: true, profile: { select: { displayName: true } } },
+        });
+        const senderName = senderUser?.profile?.displayName || senderUser?.username || 'Someone';
+
+        let notifTitle = conversation.name || senderName;
+        let notifBody = (dto.content || '').trim();
+
+        if (conversation.isEncrypted) {
+          // E2EE Privacy Boundary: never put ciphertext or plaintext in notification body
+          notifTitle = conversation.name || 'Encrypted Message';
+          notifBody = 'Sent an encrypted message';
+        } else if (!notifBody && verifiedAttachments.length > 0) {
+          notifBody = 'Sent an attachment';
+        }
+
+        for (const member of otherMembers) {
+          await this.notificationsService.createNotification({
+            userId: member.userId,
+            actorId: senderId,
+            type: 'NEW_MESSAGE',
+            conversationId,
+            messageId: message.id,
+            title: notifTitle,
+            body: notifBody,
+          });
+        }
+      } catch (err) {
+        // Log/swallow notification error so message delivery succeeds
+        console.error('Failed to dispatch notification for new message:', err);
+      }
 
       return messageItem;
     } catch (err: any) {
@@ -504,6 +607,20 @@ export class MessagesService {
       deletedAt: m.deletedAt,
       createdAt: m.createdAt,
       reactions,
+      attachments: (m.attachments || []).map((a: any) => ({
+        id: a.id,
+        uploaderId: a.uploaderId,
+        messageId: a.messageId,
+        storageKey: a.storageKey,
+        originalName: a.originalName,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+        durationSec: a.durationSec,
+        width: a.width,
+        height: a.height,
+        status: a.status,
+        createdAt: a.createdAt,
+      })),
     };
   }
 }

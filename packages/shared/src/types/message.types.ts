@@ -1,3 +1,5 @@
+import { MediaAttachmentItem } from './media.types';
+
 export type MessageType =
   | 'TEXT'
   | 'IMAGE'
@@ -38,6 +40,7 @@ export interface MessageItem {
     senderId: string;
     senderName: string;
   } | null;
+  attachments?: MediaAttachmentItem[];
   editedAt: string | Date | null;
   deletedAt: string | Date | null;
   createdAt: string | Date;

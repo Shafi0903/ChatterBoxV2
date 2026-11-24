@@ -19,6 +19,7 @@ export const SocketEvents = {
   TYPING_UPDATE: 'typing:update',
   PRESENCE_CHANGED: 'presence:changed',
   CONVERSATION_UPDATED: 'conversation:updated',
+  NOTIFICATION_NEW: 'notification:new',
 } as const;
 
 export interface ConversationJoinPayload {
@@ -30,6 +31,7 @@ export interface MessageSendPayload {
   clientMessageId: string;
   content: string;
   replyToId?: string;
+  attachmentIds?: string[];
   type?: string;
   isEncrypted?: boolean;
   senderDeviceId?: string;

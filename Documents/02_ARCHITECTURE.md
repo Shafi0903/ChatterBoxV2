@@ -11,7 +11,7 @@
 | Real-Time      | Socket.IO (with Redis Adapter for horizontal scaling)     | Authenticated rooms, acknowledgments, auto-reconnection    |
 | Database       | PostgreSQL 16 + Prisma ORM                                | Relational integrity, migrations, full-text search for MVP |
 | Cache / PubSub | Redis 7                                                   | Online presence tracking, rate limiting, Socket.IO pub/sub |
-| Object Storage | S3-compatible (MinIO in local Docker, AWS S3/R2 in prod)  | Keeps binary media out of PostgreSQL                       |
+| Object Storage | S3-compatible (RustFS in local Docker, AWS S3/R2 in prod) | Keeps binary media out of PostgreSQL                       |
 | Testing        | Vitest / Jest (Unit & Integration) + Playwright (E2E)     | Automated verification for API, auth, and core user flows  |
 
 ## 2. Monorepo Directory Structure
@@ -76,7 +76,7 @@ chatterbox/
 
 - **postgres:** `postgres:16-alpine` on port `5432` (database: `chatterbox_dev`)
 - **redis:** `redis:7-alpine` on port `6379`
-- **minio:** `minio/minio` on ports `9000` (S3 API) and `9001` (Web Console) — used starting Phase 4
+- **s3:** `rustfs/rustfs:latest` on ports `9000` (S3 API) and `9001` (Web Console) — used starting Phase 4
 
 ## 5. Required Environment Variables
 

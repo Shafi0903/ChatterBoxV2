@@ -10,6 +10,8 @@ import { ConversationsModule } from './modules/conversations/conversations.modul
 import { MessagesModule } from './modules/messages/messages.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { EncryptionModule } from './modules/encryption/encryption.module';
+import { MediaModule } from './modules/media/media.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard';
 
 @Module({
@@ -29,6 +31,8 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     MessagesModule,
     RealtimeModule,
     EncryptionModule,
+    MediaModule,
+    NotificationsModule,
   ],
   providers: [
     {

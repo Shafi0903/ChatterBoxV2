@@ -16,6 +16,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PresenceService } from '../realtime/presence.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class ConversationsService {
@@ -23,6 +24,7 @@ export class ConversationsService {
     private prisma: PrismaService,
     private presenceService: PresenceService,
     private realtimeService: RealtimeService,
+    private notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -279,6 +281,28 @@ export class ConversationsService {
       this.realtimeService.emitToUser(u.id, SocketEvents.CONVERSATION_UPDATED, { conversation });
     });
 
+    // Adjustment #3: Trigger GROUP_INVITE notification for all initial members (excluding creator)
+    try {
+      const creator = await this.prisma.user.findUnique({
+        where: { id: callerId },
+        select: { username: true, profile: { select: { displayName: true } } },
+      });
+      const creatorName = creator?.profile?.displayName || creator?.username || 'Someone';
+
+      for (const u of validUsers) {
+        await this.notificationsService.createNotification({
+          userId: u.id,
+          actorId: callerId,
+          type: 'GROUP_INVITE',
+          conversationId: newConv.id,
+          title: 'Group Invitation',
+          body: `${creatorName} added you to group "${newConv.name || conversation.name}"`,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to dispatch notification for group create:', err);
+    }
+
     return conversation;
   }
 
@@ -448,6 +472,30 @@ export class ConversationsService {
       SocketEvents.CONVERSATION_UPDATED,
       { conversation: convItem },
     );
+
+    // Adjustment #3: Trigger GROUP_INVITE notification for newly added members
+    if (newMembers.length > 0) {
+      try {
+        const caller = await this.prisma.user.findUnique({
+          where: { id: callerId },
+          select: { username: true, profile: { select: { displayName: true } } },
+        });
+        const callerName = caller?.profile?.displayName || caller?.username || 'Someone';
+
+        for (const u of newMembers) {
+          await this.notificationsService.createNotification({
+            userId: u.id,
+            actorId: callerId,
+            type: 'GROUP_INVITE',
+            conversationId,
+            title: 'Group Invitation',
+            body: `${callerName} added you to group "${convItem.name}"`,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to dispatch notification for add members:', err);
+      }
+    }
 
     return convItem;
   }

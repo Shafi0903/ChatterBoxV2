@@ -46,6 +46,19 @@ enum MessageType {
   SYSTEM
 }
 
+enum MediaAttachmentStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum NotificationType {
+  NEW_MESSAGE
+  GROUP_INVITE
+  MENTION
+  SYSTEM
+}
+
 model User {
   id              String         @id @default(cuid())
   email           String         @unique
@@ -68,6 +81,11 @@ model User {
 
   // Phase 3 Relations (E2EE Devices)
   devices         Device[]
+
+  // Phase 4 Relations (Media & Notifications)
+  mediaUploads        MediaAttachment[] @relation("UserMediaUploads")
+  notifications       Notification[]    @relation("UserNotifications")
+  actorNotifications  Notification[]    @relation("ActorNotifications")
 
   @@index([email])
   @@index([username])
@@ -182,6 +200,7 @@ model Message {
   replies           Message[]         @relation("MessageReplies")
   reactions         MessageReaction[]
   receipts          MessageReceipt[]
+  attachments       MediaAttachment[] @relation("MessageAttachments")
 
   @@unique([senderId, clientMessageId])
   @@index([conversationId, createdAt])
@@ -251,4 +270,45 @@ model OneTimePreKey {
 
   @@unique([deviceId, keyId])
   @@index([deviceId, consumedAt])
+}
+
+model MediaAttachment {
+  id           String                @id @default(cuid())
+  uploaderId   String
+  messageId    String?
+  storageKey   String                @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  durationSec  Float?
+  width        Int?
+  height       Int?
+  status       MediaAttachmentStatus @default(PENDING)
+  createdAt    DateTime              @default(now())
+
+  uploader     User                  @relation("UserMediaUploads", fields: [uploaderId], references: [id], onDelete: Cascade)
+  message      Message?              @relation("MessageAttachments", fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([uploaderId])
+  @@index([messageId])
+  @@index([status])
+}
+
+model Notification {
+  id             String           @id @default(cuid())
+  userId         String           // Recipient
+  actorId        String?          // Actor who triggered the notification
+  type           NotificationType
+  conversationId String?
+  messageId      String?
+  title          String
+  body           String
+  readAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  user           User             @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  actor          User?            @relation("ActorNotifications", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, createdAt])
 }
