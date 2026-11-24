@@ -150,6 +150,15 @@ export class MediaService {
             conversationId: true,
           },
         },
+        channelMessage: {
+          select: {
+            channel: {
+              select: {
+                communityId: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -161,25 +170,41 @@ export class MediaService {
       throw new BadRequestException('Media attachment is not ready for download');
     }
 
-    // Authorization check
+    // Adjustment #1: Cross-Phase Media Security (ConversationMember or CommunityMember)
     if (attachment.uploaderId !== userId) {
-      if (!attachment.message) {
+      if (!attachment.message && !attachment.channelMessage) {
         // Unattached media can only be accessed by its uploader
         throw new ForbiddenException('Access denied to unattached media');
       }
 
-      // Check if caller is a member of the conversation where message was posted
-      const member = await this.prisma.conversationMember.findUnique({
-        where: {
-          conversationId_userId: {
-            conversationId: attachment.message.conversationId,
-            userId,
+      if (attachment.message) {
+        // Check if caller is a member of the conversation where message was posted
+        const member = await this.prisma.conversationMember.findUnique({
+          where: {
+            conversationId_userId: {
+              conversationId: attachment.message.conversationId,
+              userId,
+            },
           },
-        },
-      });
+        });
 
-      if (!member) {
-        throw new ForbiddenException('You are not a member of the conversation containing this media');
+        if (!member) {
+          throw new ForbiddenException('You are not a member of the conversation containing this media');
+        }
+      } else if (attachment.channelMessage) {
+        // Check if caller is a member of the community containing this channel
+        const commMember = await this.prisma.communityMember.findUnique({
+          where: {
+            communityId_userId: {
+              communityId: attachment.channelMessage.channel.communityId,
+              userId,
+            },
+          },
+        });
+
+        if (!commMember) {
+          throw new ForbiddenException('You are not a member of the community containing this channel media');
+        }
       }
     }
 

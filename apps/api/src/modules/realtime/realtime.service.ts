@@ -28,17 +28,33 @@ export class RealtimeService {
     }
   }
 
+  /**
+   * Adjustment #2: Evicts active sockets of user from specified room (e.g. channel:<channelId>)
+   */
+  leaveUserSocketsFromRoom(userId: string, roomName: string) {
+    if (!this.server) return;
+    try {
+      this.server.in(`user:${userId}`).socketsLeave(roomName);
+    } catch (err: any) {
+      this.logger.error(`Error evicting sockets of user ${userId} from room ${roomName}: ${err.message}`);
+    }
+  }
+
   emitToUser(userId: string, event: string, payload: unknown) {
     if (!this.server) return;
     this.server.to(`user:${userId}`).emit(event, payload);
   }
 
-  emitToConversation(conversationId: string, event: string, payload: unknown, excludeSocketId?: string) {
+  emitToRoom(roomName: string, event: string, payload: unknown, excludeSocketId?: string) {
     if (!this.server) return;
     if (excludeSocketId) {
-      this.server.to(`conversation:${conversationId}`).except(excludeSocketId).emit(event, payload);
+      this.server.to(roomName).except(excludeSocketId).emit(event, payload);
     } else {
-      this.server.to(`conversation:${conversationId}`).emit(event, payload);
+      this.server.to(roomName).emit(event, payload);
     }
+  }
+
+  emitToConversation(conversationId: string, event: string, payload: unknown, excludeSocketId?: string) {
+    this.emitToRoom(`conversation:${conversationId}`, event, payload, excludeSocketId);
   }
 }

@@ -128,7 +128,7 @@ export class MessagesService {
         if (att.status !== 'READY') {
           throw new BadRequestException('Cannot attach media that is not READY');
         }
-        if (att.messageId !== null) {
+        if (att.messageId !== null || att.channelMessageId !== null) {
           throw new BadRequestException('Attachment is already linked to another message');
         }
       }

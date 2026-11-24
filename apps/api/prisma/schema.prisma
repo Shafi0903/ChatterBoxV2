@@ -59,6 +59,18 @@ enum NotificationType {
   SYSTEM
 }
 
+enum CommunityRole {
+  OWNER
+  ADMIN
+  MODERATOR
+  MEMBER
+}
+
+enum ChannelType {
+  TEXT
+  ANNOUNCEMENT
+}
+
 model User {
   id              String         @id @default(cuid())
   email           String         @unique
@@ -86,6 +98,12 @@ model User {
   mediaUploads        MediaAttachment[] @relation("UserMediaUploads")
   notifications       Notification[]    @relation("UserNotifications")
   actorNotifications  Notification[]    @relation("ActorNotifications")
+
+  // Phase 5 Relations (Communities & Channels)
+  ownedCommunities    Community[]       @relation("CommunityOwner")
+  communityMemberships CommunityMember[]
+  channelMessages     ChannelMessage[]  @relation("UserChannelMessages")
+  createdInvites      CommunityInvite[] @relation("UserCreatedInvites")
 
   @@index([email])
   @@index([username])
@@ -273,24 +291,27 @@ model OneTimePreKey {
 }
 
 model MediaAttachment {
-  id           String                @id @default(cuid())
-  uploaderId   String
-  messageId    String?
-  storageKey   String                @unique
-  originalName String
-  mimeType     String
-  sizeBytes    Int
-  durationSec  Float?
-  width        Int?
-  height       Int?
-  status       MediaAttachmentStatus @default(PENDING)
-  createdAt    DateTime              @default(now())
+  id               String                @id @default(cuid())
+  uploaderId       String
+  messageId        String?
+  channelMessageId String?
+  storageKey       String                @unique
+  originalName     String
+  mimeType         String
+  sizeBytes        Int
+  durationSec      Float?
+  width            Int?
+  height           Int?
+  status           MediaAttachmentStatus @default(PENDING)
+  createdAt        DateTime              @default(now())
 
-  uploader     User                  @relation("UserMediaUploads", fields: [uploaderId], references: [id], onDelete: Cascade)
-  message      Message?              @relation("MessageAttachments", fields: [messageId], references: [id], onDelete: Cascade)
+  uploader         User                  @relation("UserMediaUploads", fields: [uploaderId], references: [id], onDelete: Cascade)
+  message          Message?              @relation("MessageAttachments", fields: [messageId], references: [id], onDelete: Cascade)
+  channelMessage   ChannelMessage?       @relation("ChannelMessageAttachments", fields: [channelMessageId], references: [id], onDelete: Cascade)
 
   @@index([uploaderId])
   @@index([messageId])
+  @@index([channelMessageId])
   @@index([status])
 }
 
@@ -311,4 +332,100 @@ model Notification {
 
   @@index([userId, readAt, createdAt])
   @@index([userId, createdAt])
+}
+
+// ==========================================
+// Phase 5 Models: Communities, Channels & Invites
+// ==========================================
+
+model Community {
+  id          String            @id @default(cuid())
+  name        String            @db.VarChar(100)
+  slug        String            @unique @db.VarChar(120)
+  description String?           @db.VarChar(500)
+  iconUrl     String?
+  bannerUrl   String?
+  isPublic    Boolean           @default(true)
+  ownerId     String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  owner       User              @relation("CommunityOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  members     CommunityMember[]
+  channels    Channel[]
+  invites     CommunityInvite[]
+
+  @@index([isPublic, createdAt])
+  @@index([ownerId])
+}
+
+model CommunityMember {
+  id          String        @id @default(cuid())
+  communityId String
+  userId      String
+  role        CommunityRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+
+  community   Community     @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, userId])
+  @@index([userId])
+  @@index([communityId, role])
+}
+
+model Channel {
+  id          String        @id @default(cuid())
+  communityId String
+  name        String        @db.VarChar(50)
+  topic       String?       @db.VarChar(255)
+  type        ChannelType   @default(TEXT)
+  position    Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  community   Community     @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  messages    ChannelMessage[]
+
+  @@unique([communityId, name])
+  @@index([communityId, position])
+}
+
+model ChannelMessage {
+  id              String            @id @default(cuid())
+  channelId       String
+  senderId        String
+  clientMessageId String
+  content         String            @db.Text
+  replyToId       String?
+  editedAt        DateTime?
+  deletedAt       DateTime?
+  createdAt       DateTime          @default(now())
+
+  channel         Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  sender          User              @relation("UserChannelMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo         ChannelMessage?   @relation("ChannelMessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies         ChannelMessage[]  @relation("ChannelMessageReplies")
+  attachments     MediaAttachment[] @relation("ChannelMessageAttachments")
+
+  @@unique([senderId, clientMessageId])
+  @@index([channelId, createdAt])
+  @@index([channelId, deletedAt])
+}
+
+model CommunityInvite {
+  id          String    @id @default(cuid())
+  communityId String
+  creatorId   String
+  code        String    @unique @db.VarChar(16)
+  maxUses     Int?
+  uses        Int       @default(0)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  community   Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  creator     User      @relation("UserCreatedInvites", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([communityId])
+  @@index([code])
 }

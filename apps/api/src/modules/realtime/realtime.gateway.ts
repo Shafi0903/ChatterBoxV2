@@ -18,11 +18,16 @@ import {
   MessageDeliveredPayload,
   MessageReadPayload,
   TypingPayload,
+  ChannelJoinPayload,
+  ChannelLeavePayload,
+  ChannelMessageSendPayload,
+  ChannelTypingPayload,
 } from '@chatterbox/shared';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RealtimeService } from './realtime.service';
 import { PresenceService } from './presence.service';
 import { MessagesService } from '../messages/messages.service';
+import { ChannelsService } from '../channels/channels.service';
 
 @WebSocketGateway({
   cors: {
@@ -45,6 +50,8 @@ export class RealtimeGateway
     private presenceService: PresenceService,
     @Inject(forwardRef(() => MessagesService))
     private messagesService: MessagesService,
+    @Inject(forwardRef(() => ChannelsService))
+    private channelsService: ChannelsService,
   ) {}
 
   afterInit(server: Server) {
@@ -358,6 +365,115 @@ export class RealtimeGateway
 
     client.to(`conversation:${payload.conversationId}`).emit(SocketEvents.TYPING_UPDATE, {
       conversationId: payload.conversationId,
+      userId: user.userId,
+      displayName: user.displayName,
+      isTyping: false,
+    });
+  }
+
+  // ==========================================
+  // Phase 5 Channel Socket Handlers
+  // ==========================================
+
+  @SubscribeMessage(SocketEvents.CHANNEL_JOIN)
+  async handleChannelJoin(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: ChannelJoinPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId || !payload?.channelId) {
+      return { ok: false, error: 'Invalid payload' };
+    }
+
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: payload.channelId },
+      select: { communityId: true },
+    });
+
+    if (!channel) {
+      return { ok: false, error: 'Channel not found' };
+    }
+
+    // Verify user is a member of the community before joining socket room
+    const member = await this.prisma.communityMember.findUnique({
+      where: {
+        communityId_userId: {
+          communityId: channel.communityId,
+          userId,
+        },
+      },
+    });
+
+    if (!member) {
+      return { ok: false, error: 'FORBIDDEN: Must be a community member to join channel room' };
+    }
+
+    client.join(`channel:${payload.channelId}`);
+    return { ok: true, channelId: payload.channelId };
+  }
+
+  @SubscribeMessage(SocketEvents.CHANNEL_LEAVE)
+  handleChannelLeave(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: ChannelLeavePayload,
+  ) {
+    if (payload?.channelId) {
+      client.leave(`channel:${payload.channelId}`);
+    }
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SocketEvents.CHANNEL_MESSAGE_SEND)
+  async handleChannelMessageSend(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: ChannelMessageSendPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    try {
+      const message = await this.channelsService.sendMessage(userId, payload.channelId, {
+        clientMessageId: payload.clientMessageId,
+        content: payload.content,
+        replyToId: payload.replyToId,
+        attachmentIds: payload.attachmentIds || [],
+      });
+
+      return { ok: true, message };
+    } catch (err: any) {
+      this.logger.error(`Channel message send failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CHANNEL_TYPING_START)
+  handleChannelTypingStart(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: ChannelTypingPayload,
+  ) {
+    const user = client.data?.user;
+    if (!user || !payload?.channelId) return;
+
+    client.to(`channel:${payload.channelId}`).emit(SocketEvents.CHANNEL_TYPING_UPDATE, {
+      channelId: payload.channelId,
+      userId: user.userId,
+      displayName: user.displayName,
+      isTyping: true,
+    });
+  }
+
+  @SubscribeMessage(SocketEvents.CHANNEL_TYPING_STOP)
+  handleChannelTypingStop(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: ChannelTypingPayload,
+  ) {
+    const user = client.data?.user;
+    if (!user || !payload?.channelId) return;
+
+    client.to(`channel:${payload.channelId}`).emit(SocketEvents.CHANNEL_TYPING_UPDATE, {
+      channelId: payload.channelId,
       userId: user.userId,
       displayName: user.displayName,
       isTyping: false,

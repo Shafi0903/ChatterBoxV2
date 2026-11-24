@@ -12,6 +12,8 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
 import { EncryptionModule } from './modules/encryption/encryption.module';
 import { MediaModule } from './modules/media/media.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { CommunitiesModule } from './modules/communities/communities.module';
+import { ChannelsModule } from './modules/channels/channels.module';
 import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard';
 
 @Module({
@@ -33,6 +35,8 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     EncryptionModule,
     MediaModule,
     NotificationsModule,
+    CommunitiesModule,
+    ChannelsModule,
   ],
   providers: [
     {

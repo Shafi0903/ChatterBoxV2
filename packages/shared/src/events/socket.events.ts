@@ -20,6 +20,18 @@ export const SocketEvents = {
   PRESENCE_CHANGED: 'presence:changed',
   CONVERSATION_UPDATED: 'conversation:updated',
   NOTIFICATION_NEW: 'notification:new',
+
+  // Phase 5 Channel Events
+  CHANNEL_JOIN: 'channel:join',
+  CHANNEL_LEAVE: 'channel:leave',
+  CHANNEL_MESSAGE_SEND: 'channel:message:send',
+  CHANNEL_TYPING_START: 'channel:typing:start',
+  CHANNEL_TYPING_STOP: 'channel:typing:stop',
+  CHANNEL_MESSAGE_NEW: 'channel:message:new',
+  CHANNEL_MESSAGE_UPDATED: 'channel:message:updated',
+  CHANNEL_MESSAGE_DELETED: 'channel:message:deleted',
+  CHANNEL_TYPING_UPDATE: 'channel:typing:update',
+  COMMUNITY_UPDATED: 'community:updated',
 } as const;
 
 export interface ConversationJoinPayload {
@@ -96,4 +108,35 @@ export interface PresenceChangedPayload {
 
 export interface ConversationUpdatedPayload {
   conversation: ConversationItem;
+}
+
+export interface ChannelJoinPayload {
+  channelId: string;
+}
+
+export interface ChannelLeavePayload {
+  channelId: string;
+}
+
+export interface ChannelMessageSendPayload {
+  channelId: string;
+  clientMessageId: string;
+  content: string;
+  replyToId?: string;
+  attachmentIds?: string[];
+}
+
+export interface ChannelTypingPayload {
+  channelId: string;
+}
+
+export interface ChannelTypingUpdatePayload {
+  channelId: string;
+  userId: string;
+  displayName: string;
+  isTyping: boolean;
+}
+
+export interface CommunityUpdatedPayload {
+  community: import('../types/community.types').CommunityItem;
 }
