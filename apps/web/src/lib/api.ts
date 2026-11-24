@@ -9,7 +9,20 @@ import {
   PublicProfileResponse,
   UserProfile,
   UserSettings,
+  ConversationItem,
+  ConversationDetail,
+  CreateDmDto,
+  CreateGroupDto,
+  UpdateConversationDto,
+  AddMembersDto,
+  MarkConversationReadDto,
+  MessageItem,
+  SendMessageDto,
+  EditMessageDto,
+  CursorPaginationMeta,
+  MessageReactionItem,
 } from '@chatterbox/shared';
+import { updateSocketToken } from './socket';
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
@@ -41,6 +54,7 @@ function processQueue(error: Error | null) {
 
 export function setAccessToken(token: string | null) {
   memoryAccessToken = token;
+  updateSocketToken(token);
 }
 
 export function getAccessToken(): string | null {
@@ -234,4 +248,90 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(dto),
     }),
+
+  // Conversations (Phase 2)
+  getConversations: (filter: 'all' | 'dm' | 'group' = 'all') =>
+    apiRequest<ConversationItem[]>(`/conversations?filter=${filter}`),
+
+  createDm: (targetUserId: string) =>
+    apiRequest<ConversationItem>('/conversations/dm', {
+      method: 'POST',
+      body: JSON.stringify({ targetUserId }),
+    }),
+
+  createGroup: (name: string, memberIds: string[]) =>
+    apiRequest<ConversationItem>('/conversations/group', {
+      method: 'POST',
+      body: JSON.stringify({ name, memberIds }),
+    }),
+
+  getConversation: (id: string) =>
+    apiRequest<ConversationDetail>(`/conversations/${id}`),
+
+  updateConversation: (id: string, dto: UpdateConversationDto) =>
+    apiRequest<ConversationDetail>(`/conversations/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(dto),
+    }),
+
+  addGroupMembers: (id: string, userIds: string[]) =>
+    apiRequest<ConversationDetail>(`/conversations/${id}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userIds }),
+    }),
+
+  removeGroupMember: (id: string, userId: string) =>
+    apiRequest<void>(`/conversations/${id}/members/${userId}`, {
+      method: 'DELETE',
+    }),
+
+  markConversationRead: (id: string, lastReadMessageId?: string) =>
+    apiRequest<{ unreadCount: number }>(`/conversations/${id}/read`, {
+      method: 'POST',
+      body: JSON.stringify(lastReadMessageId ? { lastReadMessageId } : {}),
+    }),
+
+  // Messages (Phase 2)
+  getMessages: (conversationId: string, cursor?: string, limit = 50) => {
+    const query = cursor
+      ? `?cursor=${encodeURIComponent(cursor)}&limit=${limit}`
+      : `?limit=${limit}`;
+    return apiRequest<{ data: MessageItem[]; meta: CursorPaginationMeta }>(
+      `/conversations/${conversationId}/messages${query}`,
+    );
+  },
+
+  sendMessage: (conversationId: string, dto: SendMessageDto) =>
+    apiRequest<MessageItem>(`/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  editMessage: (messageId: string, content: string) =>
+    apiRequest<MessageItem>(`/messages/${messageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    }),
+
+  deleteMessage: (messageId: string) =>
+    apiRequest<MessageItem>(`/messages/${messageId}`, {
+      method: 'DELETE',
+    }),
+
+  addReaction: (messageId: string, emoji: string) =>
+    apiRequest<{ reactions: MessageReactionItem[] }>(
+      `/messages/${messageId}/reactions`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ emoji }),
+      },
+    ),
+
+  removeReaction: (messageId: string, emoji: string) =>
+    apiRequest<{ reactions: MessageReactionItem[] }>(
+      `/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+      {
+        method: 'DELETE',
+      },
+    ),
 };

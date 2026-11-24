@@ -32,6 +32,20 @@ export default function UserProfilePage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'posts' | 'stories' | 'saved'>('posts');
   const [roadmapMessage, setRoadmapMessage] = useState<string | null>(null);
+  const [isStartingDm, setIsStartingDm] = useState(false);
+
+  const handleStartMessage = async () => {
+    if (!profileData?.userId) return;
+    setIsStartingDm(true);
+    try {
+      const conv = await api.createDm(profileData.userId);
+      router.push(`/messages?c=${conv.id}`);
+    } catch {
+      setRoadmapMessage('Failed to start conversation. Please try again.');
+    } finally {
+      setIsStartingDm(false);
+    }
+  };
 
   const isOwnProfile =
     currentUser?.username?.toLowerCase() === currentUsername?.toLowerCase();
@@ -166,15 +180,12 @@ export default function UserProfilePage() {
                   <Button
                     variant="primary"
                     size="sm"
-                    onClick={() =>
-                      setRoadmapMessage(
-                        'Direct messaging unlocks in Phase 2 with real-time Socket.IO!',
-                      )
-                    }
+                    onClick={handleStartMessage}
+                    disabled={isStartingDm}
                     className="gap-1.5"
                   >
                     <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Message</span>
+                    <span>{isStartingDm ? 'Opening...' : 'Message'}</span>
                   </Button>
                   <Button
                     variant="secondary"

@@ -4,6 +4,7 @@ import React from 'react';
 import NextLink from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Home, MessageSquare, Search, Users2, User } from 'lucide-react';
+import { useChatStore } from '../../stores/chat.store';
 import { cn } from '../../lib/utils';
 
 interface MobileNavProps {
@@ -12,6 +13,7 @@ interface MobileNavProps {
 
 export const MobileNav: React.FC<MobileNavProps> = ({ onOpenSearch }) => {
   const pathname = usePathname();
+  const totalUnread = useChatStore((s) => s.getTotalUnreadCount());
 
   const links = [
     { label: 'Home', href: '/home', icon: Home },
@@ -47,13 +49,18 @@ export const MobileNav: React.FC<MobileNavProps> = ({ onOpenSearch }) => {
             key={link.label}
             href={link.href}
             className={cn(
-              'flex flex-col items-center justify-center min-w-[44px] min-h-[44px] transition-colors',
+              'relative flex flex-col items-center justify-center min-w-[44px] min-h-[44px] transition-colors',
               isActive
                 ? 'text-accent-bright font-medium'
                 : 'text-muted hover:text-primary',
             )}
           >
-            <Icon className="w-5 h-5" />
+            <div className="relative">
+              <Icon className="w-5 h-5" />
+              {link.label === 'Messages' && totalUnread > 0 && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-status-busy ring-2 ring-surface" />
+              )}
+            </div>
             <span className="text-[10px] mt-0.5">{link.label}</span>
           </NextLink>
         );

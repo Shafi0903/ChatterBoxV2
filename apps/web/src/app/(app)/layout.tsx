@@ -1,13 +1,16 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useAuthStore } from '../../stores/auth.store';
+import { useChatStore } from '../../stores/chat.store';
+import { connectSocket } from '../../lib/socket';
 import { Sidebar } from '../../components/layout/Sidebar';
 import { TopBar } from '../../components/layout/TopBar';
 import { MobileNav } from '../../components/layout/MobileNav';
 import { SearchModal } from '../../components/layout/SearchModal';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { cn } from '../../lib/utils';
 
 export default function AppLayout({
   children,
@@ -15,8 +18,18 @@ export default function AppLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, isInitialized } = useAuthStore();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // App-Shell Real-Time Lifecycle: connect socket and load conversations on auth hydration
+  useEffect(() => {
+    if (isInitialized && user) {
+      connectSocket();
+      useChatStore.getState().initSocketListeners();
+      useChatStore.getState().fetchConversations();
+    }
+  }, [isInitialized, user]);
 
   // Keyboard shortcut listener for CMD+K / CTRL+K
   useEffect(() => {
@@ -87,8 +100,15 @@ export default function AppLayout({
         {/* Fixed Top Bar */}
         <TopBar onOpenSearch={() => setIsSearchOpen(true)} />
 
-        {/* Scrollable Page Content (with topbar offset and mobile nav padding) */}
-        <main className="flex-1 pt-16 pb-20 md:pb-6 px-4 md:px-8 max-w-7xl w-full mx-auto">
+        {/* Page Content: Full-bleed for messages 3-pane dashboard, constrained for other pages */}
+        <main
+          className={cn(
+            'flex-1 pt-16 min-w-0',
+            pathname.startsWith('/messages')
+              ? 'h-screen pb-16 md:pb-0 overflow-hidden p-2 md:p-3'
+              : 'pb-20 md:pb-6 px-4 md:px-8 max-w-7xl w-full mx-auto',
+          )}
+        >
           {children}
         </main>
       </div>

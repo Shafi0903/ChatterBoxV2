@@ -34,3 +34,5 @@ export interface ConversationItem {
     createdAt: string | Date;
   } | null;
 }
+
+export type ConversationDetail = ConversationItem;

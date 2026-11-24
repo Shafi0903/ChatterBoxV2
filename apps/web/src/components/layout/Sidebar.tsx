@@ -15,6 +15,7 @@ import {
   LogOut,
 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth.store';
+import { useChatStore } from '../../stores/chat.store';
 import { Avatar } from '../ui/Avatar';
 import { cn } from '../../lib/utils';
 
@@ -39,6 +40,7 @@ export const Sidebar: React.FC = () => {
   const pathname = usePathname();
   const router = useRouter();
   const { user, profile, logout } = useAuthStore();
+  const totalUnread = useChatStore((s) => s.getTotalUnreadCount());
 
   const handleLogout = async () => {
     await logout();
@@ -96,6 +98,11 @@ export const Sidebar: React.FC = () => {
             >
               <Icon className={cn('w-4 h-4 shrink-0', isActive ? 'text-accent-bright' : 'text-muted')} />
               <span>{item.label}</span>
+              {item.label === 'Messages' && totalUnread > 0 && (
+                <span className="ml-auto px-1.5 py-0.5 rounded-full bg-status-busy text-white text-[10px] font-bold leading-none">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </span>
+              )}
             </NextLink>
           );
         })}

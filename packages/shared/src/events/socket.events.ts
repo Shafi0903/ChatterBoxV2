@@ -43,6 +43,25 @@ export interface MessageReadPayload {
   lastReadMessageId: string;
 }
 
+export interface MessageUpdatedPayload {
+  messageId: string;
+  conversationId: string;
+  content: string;
+  editedAt: string | Date;
+}
+
+export interface MessageDeletedPayload {
+  messageId: string;
+  conversationId: string;
+  deletedAt: string | Date;
+}
+
+export interface MessageReactionPayload {
+  messageId: string;
+  conversationId: string;
+  reactions: import('../types/message.types').MessageReactionItem[];
+}
+
 export interface TypingPayload {
   conversationId: string;
 }

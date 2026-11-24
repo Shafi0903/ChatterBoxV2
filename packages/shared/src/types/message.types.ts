@@ -38,6 +38,7 @@ export interface MessageItem {
   editedAt: string | Date | null;
   deletedAt: string | Date | null;
   createdAt: string | Date;
+  status?: MessageStatus | 'FAILED';
   reactions: MessageReactionItem[];
 }
 

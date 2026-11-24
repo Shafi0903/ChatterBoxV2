@@ -1,4 +1,5 @@
 import React from 'react';
+import { PresenceStatus } from '@chatterbox/shared';
 import { cn } from '../../lib/utils';
 
 export interface AvatarProps {
@@ -6,6 +7,7 @@ export interface AvatarProps {
   name: string;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   showOnlineDot?: boolean;
+  presenceStatus?: PresenceStatus;
   className?: string;
 }
 
@@ -14,6 +16,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   name,
   size = 'md',
   showOnlineDot = false,
+  presenceStatus,
   className,
 }) => {
   const [imageError, setImageError] = React.useState(false);
@@ -39,6 +42,16 @@ export const Avatar: React.FC<AvatarProps> = ({
     .map((part) => part[0]?.toUpperCase())
     .join('') || '?';
 
+  const shouldShowDot = showOnlineDot || presenceStatus !== undefined;
+  const dotColor =
+    presenceStatus === 'ONLINE'
+      ? 'bg-status-online'
+      : presenceStatus === 'AWAY'
+        ? 'bg-status-away'
+        : presenceStatus === 'IN_CALL'
+          ? 'bg-status-busy'
+          : 'bg-status-offline';
+
   return (
     <div className={cn('relative inline-flex shrink-0 select-none', className)}>
       <div
@@ -59,10 +72,11 @@ export const Avatar: React.FC<AvatarProps> = ({
           <span>{initials}</span>
         )}
       </div>
-      {showOnlineDot && (
+      {shouldShowDot && (
         <span
           className={cn(
-            'absolute rounded-full bg-status-online ring-2 ring-canvas',
+            'absolute rounded-full ring-2 ring-canvas',
+            dotColor,
             dotSizes[size],
           )}
         />

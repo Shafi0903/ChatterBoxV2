@@ -7,7 +7,9 @@ import {
   LoginDto,
 } from '@chatterbox/shared';
 import { api, setAccessToken } from '../lib/api';
+import { disconnectSocket } from '../lib/socket';
 import { useThemeStore } from './theme.store';
+import { useChatStore } from './chat.store';
 
 interface AuthState {
   user: SafeUser | null;
@@ -141,6 +143,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // Continue cleanup even if server call fails
     } finally {
+      disconnectSocket();
+      useChatStore.getState().resetChatState();
       setAccessToken(null);
       set({
         user: null,
