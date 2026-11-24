@@ -31,6 +31,20 @@ import {
   MediaDownloadUrlResponse,
   NotificationItem,
   PaginatedNotificationsResponse,
+  CommunityItem,
+  CommunityDetail,
+  CommunityMemberItem,
+  ChannelItem,
+  ChannelMessageItem,
+  CommunityInviteItem,
+  CreateCommunityDto,
+  UpdateCommunityDto,
+  CreateInviteDto,
+  UpdateMemberRoleDto,
+  CreateChannelDto,
+  UpdateChannelDto,
+  SendChannelMessageDto,
+  EditChannelMessageDto,
 } from '@chatterbox/shared';
 import { updateSocketToken } from './socket';
 
@@ -422,5 +436,127 @@ export const api = {
   markAllNotificationsRead: () =>
     apiRequest<{ success: boolean; count: number }>('/notifications/read-all', {
       method: 'POST',
+    }),
+
+  // Phase 5: Communities, Channels, Invites & RBAC APIs
+  createCommunity: (dto: CreateCommunityDto) =>
+    apiRequest<CommunityItem>('/communities', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  getMyCommunities: () =>
+    apiRequest<CommunityItem[]>('/communities', {
+      method: 'GET',
+    }),
+
+  discoverCommunities: (query?: string, cursor?: string, limit = 20) => {
+    const params = new URLSearchParams();
+    if (query) params.append('q', query);
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: (CommunityItem & { isMember: boolean })[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/communities/discover${qStr ? `?${qStr}` : ''}`, { method: 'GET' });
+  },
+
+  getCommunity: (communityId: string) =>
+    apiRequest<CommunityDetail>(`/communities/${communityId}`, {
+      method: 'GET',
+    }),
+
+  updateCommunity: (communityId: string, dto: UpdateCommunityDto) =>
+    apiRequest<CommunityItem>(`/communities/${communityId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(dto),
+    }),
+
+  deleteCommunity: (communityId: string) =>
+    apiRequest<{ success: boolean }>(`/communities/${communityId}`, {
+      method: 'DELETE',
+    }),
+
+  joinCommunity: (communityId: string) =>
+    apiRequest<CommunityItem>(`/communities/${communityId}/join`, {
+      method: 'POST',
+    }),
+
+  leaveCommunity: (communityId: string) =>
+    apiRequest<{ success: boolean }>(`/communities/${communityId}/leave`, {
+      method: 'DELETE',
+    }),
+
+  updateMemberRole: (communityId: string, userId: string, dto: UpdateMemberRoleDto) =>
+    apiRequest<CommunityMemberItem>(`/communities/${communityId}/members/${userId}/role`, {
+      method: 'PATCH',
+      body: JSON.stringify(dto),
+    }),
+
+  kickMember: (communityId: string, userId: string) =>
+    apiRequest<{ success: boolean }>(`/communities/${communityId}/members/${userId}`, {
+      method: 'DELETE',
+    }),
+
+  createInvite: (communityId: string, dto: CreateInviteDto) =>
+    apiRequest<CommunityInviteItem>(`/communities/${communityId}/invites`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  getInvites: (communityId: string) =>
+    apiRequest<CommunityInviteItem[]>(`/communities/${communityId}/invites`, {
+      method: 'GET',
+    }),
+
+  joinByInviteCode: (code: string) =>
+    apiRequest<CommunityItem>(`/communities/invites/${code}/join`, {
+      method: 'POST',
+    }),
+
+  createChannel: (communityId: string, dto: CreateChannelDto) =>
+    apiRequest<ChannelItem>(`/communities/${communityId}/channels`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  updateChannel: (channelId: string, dto: UpdateChannelDto) =>
+    apiRequest<ChannelItem>(`/channels/${channelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(dto),
+    }),
+
+  deleteChannel: (channelId: string) =>
+    apiRequest<{ success: boolean }>(`/channels/${channelId}`, {
+      method: 'DELETE',
+    }),
+
+  getChannelMessages: (channelId: string, cursor?: string, limit = 50) => {
+    const params = new URLSearchParams();
+    if (cursor) params.append('cursor', cursor);
+    if (limit) params.append('limit', limit.toString());
+    const qStr = params.toString();
+    return apiRequest<{
+      data: ChannelMessageItem[];
+      meta: { nextCursor: string | null; hasMore: boolean };
+    }>(`/channels/${channelId}/messages${qStr ? `?${qStr}` : ''}`, { method: 'GET' });
+  },
+
+  sendChannelMessage: (channelId: string, dto: SendChannelMessageDto) =>
+    apiRequest<ChannelMessageItem>(`/channels/${channelId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  editChannelMessage: (messageId: string, dto: EditChannelMessageDto) =>
+    apiRequest<ChannelMessageItem>(`/channels/messages/${messageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(dto),
+    }),
+
+  deleteChannelMessage: (messageId: string) =>
+    apiRequest<{ success: boolean }>(`/channels/messages/${messageId}`, {
+      method: 'DELETE',
     }),
 };

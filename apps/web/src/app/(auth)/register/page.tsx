@@ -1,16 +1,17 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, Suspense } from 'react';
 import NextLink from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { registerSchema } from '@chatterbox/shared';
 import { useAuthStore } from '../../../stores/auth.store';
 import { Button } from '../../../components/ui/Button';
 import { Input } from '../../../components/ui/Input';
 import { ApiError } from '../../../lib/api';
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const register = useAuthStore((s) => s.register);
 
   const [email, setEmail] = useState('');
@@ -20,6 +21,13 @@ export default function RegisterPage() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Adjustment #2: Safe redirect extraction
+  const redirectParam = searchParams.get('redirect');
+  const safeRedirect =
+    redirectParam && redirectParam.startsWith('/') && !redirectParam.startsWith('//')
+      ? redirectParam
+      : '/home';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,7 +57,7 @@ export default function RegisterPage() {
     setIsLoading(true);
     try {
       await register(result.data);
-      router.replace('/home');
+      router.replace(safeRedirect);
     } catch (err) {
       if (err instanceof ApiError) {
         setServerError(err.message);
@@ -153,7 +161,7 @@ export default function RegisterPage() {
         <p className="text-xs text-secondary">
           Already have an account?{' '}
           <NextLink
-            href="/login"
+            href={redirectParam ? `/login?redirect=${encodeURIComponent(redirectParam)}` : '/login'}
             className="text-accent-bright font-semibold hover:underline"
           >
             Sign in
@@ -161,5 +169,13 @@ export default function RegisterPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="text-secondary text-sm text-center py-10">Loading...</div>}>
+      <RegisterForm />
+    </Suspense>
   );
 }

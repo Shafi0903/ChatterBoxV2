@@ -1,17 +1,17 @@
 'use client';
 
-import React, { useState } from 'react';
-import Link from 'next/navigation';
+import React, { useState, Suspense } from 'react';
 import NextLink from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { loginSchema } from '@chatterbox/shared';
 import { useAuthStore } from '../../../stores/auth.store';
 import { Button } from '../../../components/ui/Button';
 import { Input } from '../../../components/ui/Input';
 import { ApiError } from '../../../lib/api';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const login = useAuthStore((s) => s.login);
 
   const [identifier, setIdentifier] = useState('');
@@ -19,6 +19,13 @@ export default function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Adjustment #2: Safe redirect extraction (relative paths only)
+  const redirectParam = searchParams.get('redirect');
+  const safeRedirect =
+    redirectParam && redirectParam.startsWith('/') && !redirectParam.startsWith('//')
+      ? redirectParam
+      : '/home';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,7 +49,7 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       await login(result.data);
-      router.replace('/home');
+      router.replace(safeRedirect);
     } catch (err) {
       if (err instanceof ApiError) {
         setServerError(err.message);
@@ -125,7 +132,7 @@ export default function LoginPage() {
         <p className="text-xs text-secondary">
           Don&apos;t have an account?{' '}
           <NextLink
-            href="/register"
+            href={redirectParam ? `/register?redirect=${encodeURIComponent(redirectParam)}` : '/register'}
             className="text-accent-bright font-semibold hover:underline"
           >
             Create one
@@ -133,5 +140,13 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="text-secondary text-sm text-center py-10">Loading...</div>}>
+      <LoginForm />
+    </Suspense>
   );
 }
