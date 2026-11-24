@@ -5,7 +5,8 @@ export type NotificationType =
   | 'SYSTEM'
   | 'NEW_FOLLOWER'
   | 'POST_LIKE'
-  | 'POST_COMMENT';
+  | 'POST_COMMENT'
+  | 'MISSED_CALL';
 
 export interface NotificationItem {
   id: string;

@@ -60,6 +60,21 @@ enum NotificationType {
   NEW_FOLLOWER
   POST_LIKE
   POST_COMMENT
+  MISSED_CALL
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  ENDED
+  MISSED
+  REJECTED
+  FAILED
 }
 
 enum PostVisibility {
@@ -121,6 +136,10 @@ model User {
   postComments        PostComment[]     @relation("UserPostComments")
   stories             Story[]           @relation("UserStories")
   storyViews          StoryView[]       @relation("UserStoryViews")
+
+  // Phase 7 Relations (Calls)
+  outgoingCalls       Call[]            @relation("OutgoingCalls")
+  incomingCalls       Call[]            @relation("IncomingCalls")
 
   @@index([email])
   @@index([username])
@@ -187,6 +206,7 @@ model Conversation {
 
   members       ConversationMember[]
   messages      Message[]
+  calls         Call[]
 
   @@index([lastMessageAt])
   @@index([dmKey])
@@ -552,3 +572,30 @@ model StoryView {
   @@index([storyId])
   @@index([viewerId])
 }
+
+// ==========================================
+// Phase 7 Models: 1:1 WebRTC Calls
+// ==========================================
+
+model Call {
+  id             String     @id @default(cuid())
+  conversationId String
+  callerId       String
+  calleeId       String
+  type           CallType
+  status         CallStatus @default(RINGING)
+  startedAt      DateTime?
+  endedAt        DateTime?
+  durationSec    Int?
+  createdAt      DateTime   @default(now())
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  caller         User         @relation("OutgoingCalls", fields: [callerId], references: [id], onDelete: Cascade)
+  callee         User         @relation("IncomingCalls", fields: [calleeId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([callerId, createdAt])
+  @@index([calleeId, createdAt])
+  @@index([status])
+}
+

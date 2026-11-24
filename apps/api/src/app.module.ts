@@ -17,6 +17,7 @@ import { ChannelsModule } from './modules/channels/channels.module';
 import { FollowsModule } from './modules/follows/follows.module';
 import { PostsModule } from './modules/posts/posts.module';
 import { StoriesModule } from './modules/stories/stories.module';
+import { CallsModule } from './modules/calls/calls.module';
 import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard';
 
 @Module({
@@ -43,6 +44,7 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     FollowsModule,
     PostsModule,
     StoriesModule,
+    CallsModule,
   ],
   providers: [
     {

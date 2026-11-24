@@ -32,6 +32,23 @@ export const SocketEvents = {
   CHANNEL_MESSAGE_DELETED: 'channel:message:deleted',
   CHANNEL_TYPING_UPDATE: 'channel:typing:update',
   COMMUNITY_UPDATED: 'community:updated',
+
+  // Phase 7 WebRTC Signaling Events
+  // Client -> Server
+  CALL_INITIATE: 'call:initiate',
+  CALL_ACCEPT: 'call:accept',
+  CALL_REJECT: 'call:reject',
+  CALL_END: 'call:end',
+  CALL_OFFER: 'call:offer',
+  CALL_ANSWER: 'call:answer',
+  CALL_ICE_CANDIDATE: 'call:ice-candidate',
+
+  // Server -> Client
+  CALL_INCOMING: 'call:incoming',
+  CALL_ACCEPTED: 'call:accepted',
+  CALL_REJECTED: 'call:rejected',
+  CALL_ENDED: 'call:ended',
+  CALL_BUSY: 'call:busy',
 } as const;
 
 export interface ConversationJoinPayload {
@@ -140,3 +157,69 @@ export interface ChannelTypingUpdatePayload {
 export interface CommunityUpdatedPayload {
   community: import('../types/community.types').CommunityItem;
 }
+
+// Phase 7 WebRTC Signaling Payloads
+export interface CallInitiatePayload {
+  conversationId: string;
+  type: 'AUDIO' | 'VIDEO';
+}
+
+export interface CallActionPayload {
+  callId: string;
+}
+
+export interface CallOfferPayload {
+  callId: string;
+  sdp: {
+    type: string;
+    sdp: string;
+    [key: string]: any;
+  };
+}
+
+export interface CallAnswerPayload {
+  callId: string;
+  sdp: {
+    type: string;
+    sdp: string;
+    [key: string]: any;
+  };
+}
+
+export interface CallIceCandidatePayload {
+  callId: string;
+  candidate: {
+    candidate: string;
+    [key: string]: any;
+  };
+}
+
+export interface CallIncomingPayload {
+  call: import('../types/call.types').CallItem;
+}
+
+export interface CallAcceptedPayload {
+  callId: string;
+  acceptedBy: string;
+  startedAt: string | Date;
+}
+
+export interface CallRejectedPayload {
+  callId: string;
+  rejectedBy: string;
+  reason?: string;
+}
+
+export interface CallEndedPayload {
+  callId: string;
+  endedBy?: string;
+  reason: 'ended' | 'canceled' | 'rejected' | 'missed' | 'busy' | 'failed' | 'disconnected';
+  durationSec?: number | null;
+}
+
+export interface CallBusyPayload {
+  conversationId: string;
+  callId?: string;
+  reason: string;
+}
+

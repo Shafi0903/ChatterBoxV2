@@ -22,12 +22,23 @@ import {
   ChannelLeavePayload,
   ChannelMessageSendPayload,
   ChannelTypingPayload,
+  CallInitiatePayload,
+  CallActionPayload,
+  CallOfferPayload,
+  CallAnswerPayload,
+  CallIceCandidatePayload,
+  callInitiateSchema,
+  callActionSchema,
+  callOfferSchema,
+  callAnswerSchema,
+  callIceCandidateSchema,
 } from '@chatterbox/shared';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RealtimeService } from './realtime.service';
 import { PresenceService } from './presence.service';
 import { MessagesService } from '../messages/messages.service';
 import { ChannelsService } from '../channels/channels.service';
+import { CallsService } from '../calls/calls.service';
 
 @WebSocketGateway({
   cors: {
@@ -52,6 +63,8 @@ export class RealtimeGateway
     private messagesService: MessagesService,
     @Inject(forwardRef(() => ChannelsService))
     private channelsService: ChannelsService,
+    @Inject(forwardRef(() => CallsService))
+    private callsService: CallsService,
   ) {}
 
   afterInit(server: Server) {
@@ -143,6 +156,8 @@ export class RealtimeGateway
       client.id,
       async (userId) => {
         await this.broadcastPresenceToContacts(userId, 'OFFLINE');
+        // Handle call termination if user disconnects all active sockets
+        await this.callsService.handleUserDisconnect(userId);
       },
     );
   }
@@ -478,5 +493,216 @@ export class RealtimeGateway
       displayName: user.displayName,
       isTyping: false,
     });
+  }
+
+  // ==========================================
+  // Phase 7 WebRTC Signaling Events
+  // ==========================================
+
+  @SubscribeMessage(SocketEvents.CALL_INITIATE)
+  async handleCallInitiate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallInitiatePayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callInitiateSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const res = await this.callsService.initiateCall(
+        userId,
+        parsed.data.conversationId,
+        parsed.data.type,
+      );
+
+      if (!res.ok) {
+        return { ok: false, error: res.error || 'Failed to initiate call', busy: res.busy };
+      }
+
+      return { ok: true, call: res.call };
+    } catch (err: any) {
+      this.logger.error(`Call initiate failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CALL_ACCEPT)
+  async handleCallAccept(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallActionPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callActionSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const call = await this.callsService.acceptCall(userId, parsed.data.callId);
+      return { ok: true, call };
+    } catch (err: any) {
+      this.logger.error(`Call accept failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CALL_REJECT)
+  async handleCallReject(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallActionPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callActionSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const call = await this.callsService.rejectCall(userId, parsed.data.callId);
+      return { ok: true, call };
+    } catch (err: any) {
+      this.logger.error(`Call reject failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CALL_END)
+  async handleCallEnd(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallActionPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callActionSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const call = await this.callsService.endCall(userId, parsed.data.callId);
+      return { ok: true, call };
+    } catch (err: any) {
+      this.logger.error(`Call end failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CALL_OFFER)
+  async handleCallOffer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallOfferPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callOfferSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const { peerId } = await this.callsService.verifySignalingParticipant(
+        userId,
+        parsed.data.callId,
+      );
+
+      // Relay SDP offer strictly to peer's user room
+      this.realtimeService.emitToUser(peerId, SocketEvents.CALL_OFFER, {
+        callId: parsed.data.callId,
+        sdp: parsed.data.sdp,
+      });
+
+      return { ok: true };
+    } catch (err: any) {
+      this.logger.error(`Call offer relay failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CALL_ANSWER)
+  async handleCallAnswer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallAnswerPayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callAnswerSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const { peerId } = await this.callsService.verifySignalingParticipant(
+        userId,
+        parsed.data.callId,
+      );
+
+      // Relay SDP answer strictly to peer's user room
+      this.realtimeService.emitToUser(peerId, SocketEvents.CALL_ANSWER, {
+        callId: parsed.data.callId,
+        sdp: parsed.data.sdp,
+      });
+
+      return { ok: true };
+    } catch (err: any) {
+      this.logger.error(`Call answer relay failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @SubscribeMessage(SocketEvents.CALL_ICE_CANDIDATE)
+  async handleCallIceCandidate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: CallIceCandidatePayload,
+  ) {
+    const userId = client.data?.user?.userId;
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = callIceCandidateSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', details: parsed.error.issues };
+    }
+
+    try {
+      const { peerId } = await this.callsService.verifySignalingParticipant(
+        userId,
+        parsed.data.callId,
+      );
+
+      // Relay ICE candidate strictly to peer's user room
+      this.realtimeService.emitToUser(peerId, SocketEvents.CALL_ICE_CANDIDATE, {
+        callId: parsed.data.callId,
+        candidate: parsed.data.candidate,
+      });
+
+      return { ok: true };
+    } catch (err: any) {
+      this.logger.error(`Call ICE candidate relay failed: ${err.message}`);
+      return { ok: false, error: err.message };
+    }
   }
 }
