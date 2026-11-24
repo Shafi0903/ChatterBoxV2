@@ -20,6 +20,7 @@ export interface CreateNotificationParams {
   type: NotificationType;
   conversationId?: string | null;
   messageId?: string | null;
+  postId?: string | null;
   title: string;
   body: string;
 }
@@ -80,6 +81,7 @@ export class NotificationsService {
         type: params.type,
         conversationId: params.conversationId ?? null,
         messageId: params.messageId ?? null,
+        postId: params.postId ?? null,
         title: params.title,
         body: params.body,
       },
@@ -248,6 +250,7 @@ export class NotificationsService {
       type: n.type,
       conversationId: n.conversationId,
       messageId: n.messageId,
+      postId: n.postId,
       title: n.title,
       body: n.body,
       readAt: n.readAt,

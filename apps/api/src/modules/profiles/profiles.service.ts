@@ -18,7 +18,10 @@ export class ProfilesService {
   /**
    * Retrieves public profile for a user by username with real metrics
    */
-  async getProfileByUsername(username: string): Promise<PublicProfileResponse> {
+  async getProfileByUsername(
+    username: string,
+    callerId?: string,
+  ): Promise<PublicProfileResponse> {
     const normalizedUsername = username.toLowerCase().trim();
 
     const user = await this.prisma.user.findUnique({
@@ -35,6 +38,32 @@ export class ProfilesService {
       });
     }
 
+    // Zero fake data: fetch real PostgreSQL metrics
+    const [postsCount, followersCount, followingCount, followRecord] = await Promise.all([
+      this.prisma.post.count({
+        where: {
+          authorId: user.id,
+          deletedAt: null,
+        },
+      }),
+      this.prisma.follow.count({
+        where: { followingId: user.id },
+      }),
+      this.prisma.follow.count({
+        where: { followerId: user.id },
+      }),
+      callerId
+        ? this.prisma.follow.findUnique({
+            where: {
+              followerId_followingId: {
+                followerId: callerId,
+                followingId: user.id,
+              },
+            },
+          })
+        : null,
+    ]);
+
     return {
       id: user.profile.id,
       userId: user.id,
@@ -47,10 +76,11 @@ export class ProfilesService {
       tags: user.profile.tags,
       createdAt: user.profile.createdAt,
       counts: {
-        posts: 0,
-        followers: 0,
-        following: 0,
+        posts: postsCount,
+        followers: followersCount,
+        following: followingCount,
       },
+      isFollowing: !!followRecord,
     };
   }
 

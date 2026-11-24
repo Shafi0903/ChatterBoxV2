@@ -14,6 +14,9 @@ import { MediaModule } from './modules/media/media.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { CommunitiesModule } from './modules/communities/communities.module';
 import { ChannelsModule } from './modules/channels/channels.module';
+import { FollowsModule } from './modules/follows/follows.module';
+import { PostsModule } from './modules/posts/posts.module';
+import { StoriesModule } from './modules/stories/stories.module';
 import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard';
 
 @Module({
@@ -37,6 +40,9 @@ import { OptionalThrottlerGuard } from './common/guards/optional-throttler.guard
     NotificationsModule,
     CommunitiesModule,
     ChannelsModule,
+    FollowsModule,
+    PostsModule,
+    StoriesModule,
   ],
   providers: [
     {

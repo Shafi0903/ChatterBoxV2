@@ -2,7 +2,10 @@ export type NotificationType =
   | 'NEW_MESSAGE'
   | 'GROUP_INVITE'
   | 'MENTION'
-  | 'SYSTEM';
+  | 'SYSTEM'
+  | 'NEW_FOLLOWER'
+  | 'POST_LIKE'
+  | 'POST_COMMENT';
 
 export interface NotificationItem {
   id: string;
@@ -17,6 +20,7 @@ export interface NotificationItem {
   type: NotificationType;
   conversationId?: string | null;
   messageId?: string | null;
+  postId?: string | null;
   title: string;
   body: string;
   readAt: string | Date | null;

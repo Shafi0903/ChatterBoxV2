@@ -236,9 +236,14 @@ export class ChannelsService {
         if (att.status !== 'READY') {
           throw new BadRequestException('Cannot attach media that is not READY');
         }
-        // Adjustment #1: Verify not already attached to another DM or Channel message
-        if (att.messageId !== null || att.channelMessageId !== null) {
-          throw new BadRequestException('Attachment is already linked to another message');
+        // Verify not already attached to another DM, Channel message, Post or Story
+        if (
+          att.messageId !== null ||
+          att.channelMessageId !== null ||
+          att.postId !== null ||
+          att.storyId !== null
+        ) {
+          throw new BadRequestException('Attachment is already linked to another message or post');
         }
       }
     }

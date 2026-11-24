@@ -27,4 +27,5 @@ export interface PublicProfileResponse {
     followers: number;
     following: number;
   };
+  isFollowing?: boolean;
 }

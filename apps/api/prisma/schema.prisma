@@ -57,6 +57,14 @@ enum NotificationType {
   GROUP_INVITE
   MENTION
   SYSTEM
+  NEW_FOLLOWER
+  POST_LIKE
+  POST_COMMENT
+}
+
+enum PostVisibility {
+  PUBLIC
+  FOLLOWERS
 }
 
 enum CommunityRole {
@@ -104,6 +112,15 @@ model User {
   communityMemberships CommunityMember[]
   channelMessages     ChannelMessage[]  @relation("UserChannelMessages")
   createdInvites      CommunityInvite[] @relation("UserCreatedInvites")
+
+  // Phase 6 Relations (Follows, Posts, Likes, Comments, Stories)
+  followers           Follow[]          @relation("UserFollowers")
+  following           Follow[]          @relation("UserFollowing")
+  posts               Post[]            @relation("UserPosts")
+  postLikes           PostLike[]        @relation("UserPostLikes")
+  postComments        PostComment[]     @relation("UserPostComments")
+  stories             Story[]           @relation("UserStories")
+  storyViews          StoryView[]       @relation("UserStoryViews")
 
   @@index([email])
   @@index([username])
@@ -295,6 +312,8 @@ model MediaAttachment {
   uploaderId       String
   messageId        String?
   channelMessageId String?
+  postId           String?
+  storyId          String?
   storageKey       String                @unique
   originalName     String
   mimeType         String
@@ -308,10 +327,14 @@ model MediaAttachment {
   uploader         User                  @relation("UserMediaUploads", fields: [uploaderId], references: [id], onDelete: Cascade)
   message          Message?              @relation("MessageAttachments", fields: [messageId], references: [id], onDelete: Cascade)
   channelMessage   ChannelMessage?       @relation("ChannelMessageAttachments", fields: [channelMessageId], references: [id], onDelete: Cascade)
+  post             Post?                 @relation("PostAttachments", fields: [postId], references: [id], onDelete: Cascade)
+  story            Story?                @relation("StoryAttachments", fields: [storyId], references: [id], onDelete: Cascade)
 
   @@index([uploaderId])
   @@index([messageId])
   @@index([channelMessageId])
+  @@index([postId])
+  @@index([storyId])
   @@index([status])
 }
 
@@ -322,6 +345,7 @@ model Notification {
   type           NotificationType
   conversationId String?
   messageId      String?
+  postId         String?
   title          String
   body           String
   readAt         DateTime?
@@ -332,6 +356,7 @@ model Notification {
 
   @@index([userId, readAt, createdAt])
   @@index([userId, createdAt])
+  @@index([postId])
 }
 
 // ==========================================
@@ -428,4 +453,102 @@ model CommunityInvite {
 
   @@index([communityId])
   @@index([code])
+}
+
+// ==========================================
+// Phase 6 Models: Follows, Posts, Comments & Stories
+// ==========================================
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower    User     @relation("UserFollowers", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowing", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+model Post {
+  id          String            @id @default(cuid())
+  authorId    String
+  content     String            @db.Text
+  visibility  PostVisibility    @default(PUBLIC)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+
+  author      User              @relation("UserPosts", fields: [authorId], references: [id], onDelete: Cascade)
+  likes       PostLike[]
+  comments    PostComment[]
+  attachments MediaAttachment[] @relation("PostAttachments")
+
+  @@index([authorId, createdAt])
+  @@index([visibility, createdAt])
+  @@index([deletedAt])
+}
+
+model PostLike {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation("UserPostLikes", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([postId])
+  @@index([userId])
+}
+
+model PostComment {
+  id        String    @id @default(cuid())
+  postId    String
+  authorId  String
+  content   String    @db.Text
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author    User      @relation("UserPostComments", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+  @@index([authorId])
+  @@index([deletedAt])
+}
+
+model Story {
+  id              String            @id @default(cuid())
+  authorId        String
+  caption         String?           @db.VarChar(300)
+  backgroundColor String?           @db.VarChar(50)
+  expiresAt       DateTime
+  createdAt       DateTime          @default(now())
+
+  author          User              @relation("UserStories", fields: [authorId], references: [id], onDelete: Cascade)
+  views           StoryView[]
+  attachments     MediaAttachment[] @relation("StoryAttachments")
+
+  @@index([authorId, expiresAt])
+  @@index([expiresAt])
+}
+
+model StoryView {
+  id        String   @id @default(cuid())
+  storyId   String
+  viewerId  String
+  viewedAt  DateTime @default(now())
+
+  story     Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  viewer    User     @relation("UserStoryViews", fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, viewerId])
+  @@index([storyId])
+  @@index([viewerId])
 }

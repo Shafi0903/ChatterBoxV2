@@ -159,6 +159,21 @@ export class MediaService {
             },
           },
         },
+        post: {
+          select: {
+            id: true,
+            authorId: true,
+            visibility: true,
+            deletedAt: true,
+          },
+        },
+        story: {
+          select: {
+            id: true,
+            authorId: true,
+            expiresAt: true,
+          },
+        },
       },
     });
 
@@ -170,9 +185,23 @@ export class MediaService {
       throw new BadRequestException('Media attachment is not ready for download');
     }
 
-    // Adjustment #1: Cross-Phase Media Security (ConversationMember or CommunityMember)
+    // Adjustment #2: Enforce story expiry and post deletion BEFORE uploader shortcut
+    if (attachment.story) {
+      const isExpired = new Date(attachment.story.expiresAt) <= new Date();
+      if (isExpired) {
+        throw new NotFoundException('Story media has expired and is no longer available');
+      }
+    }
+
+    if (attachment.post) {
+      if (attachment.post.deletedAt !== null) {
+        throw new NotFoundException('Post containing this media was deleted');
+      }
+    }
+
+    // Cross-Phase Media Security
     if (attachment.uploaderId !== userId) {
-      if (!attachment.message && !attachment.channelMessage) {
+      if (!attachment.message && !attachment.channelMessage && !attachment.post && !attachment.story) {
         // Unattached media can only be accessed by its uploader
         throw new ForbiddenException('Access denied to unattached media');
       }
@@ -204,6 +233,34 @@ export class MediaService {
 
         if (!commMember) {
           throw new ForbiddenException('You are not a member of the community containing this channel media');
+        }
+      } else if (attachment.post) {
+        // If post visibility is FOLLOWERS, verify caller is following author
+        if (attachment.post.visibility === 'FOLLOWERS') {
+          const follow = await this.prisma.follow.findUnique({
+            where: {
+              followerId_followingId: {
+                followerId: userId,
+                followingId: attachment.post.authorId,
+              },
+            },
+          });
+          if (!follow) {
+            throw new ForbiddenException('You must follow the author to access this post media');
+          }
+        }
+      } else if (attachment.story) {
+        // Check if caller is following story author
+        const follow = await this.prisma.follow.findUnique({
+          where: {
+            followerId_followingId: {
+              followerId: userId,
+              followingId: attachment.story.authorId,
+            },
+          },
+        });
+        if (!follow) {
+          throw new ForbiddenException('You must follow the author to view this story media');
         }
       }
     }

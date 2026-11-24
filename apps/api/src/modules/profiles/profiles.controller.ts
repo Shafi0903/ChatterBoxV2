@@ -27,9 +27,10 @@ export class ProfilesController {
   @Get(':username')
   @HttpCode(HttpStatus.OK)
   async getProfile(
+    @CurrentUser('userId') callerId: string,
     @Param('username') username: string,
   ): Promise<PublicProfileResponse> {
-    return this.profilesService.getProfileByUsername(username);
+    return this.profilesService.getProfileByUsername(username, callerId);
   }
 
   @Patch('me')
