@@ -27,6 +27,7 @@ export * from './validation/community.schema';
 export * from './validation/social.schema';
 export * from './validation/call.schema';
 export * from './validation/search.schema';
+export * from './validation/url.schema';
 
 export * from './crypto/e2ee';
 

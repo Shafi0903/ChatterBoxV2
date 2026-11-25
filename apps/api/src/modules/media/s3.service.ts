@@ -9,28 +9,41 @@ import {
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { getS3Config } from '../../config/s3-config.util';
 
 @Injectable()
 export class S3Service implements OnModuleInit {
   private readonly logger = new Logger(S3Service.name);
   private readonly s3Client: S3Client;
+  private readonly publicS3Client: S3Client;
   private readonly bucket: string;
 
   constructor() {
-    const endpoint = process.env.S3_ENDPOINT || 'http://localhost:9000';
-    this.bucket = process.env.S3_BUCKET || 'chatterbox-media';
-    const accessKeyId = process.env.S3_ACCESS_KEY || 'minioadmin';
-    const secretAccessKey = process.env.S3_SECRET_KEY || 'minioadmin';
+    const config = getS3Config();
+    this.bucket = config.bucket;
 
     this.s3Client = new S3Client({
-      endpoint,
+      endpoint: config.endpoint,
       region: 'us-east-1',
       credentials: {
-        accessKeyId,
-        secretAccessKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
       },
       forcePathStyle: true,
     });
+
+    this.publicS3Client =
+      config.publicEndpoint !== config.endpoint
+        ? new S3Client({
+            endpoint: config.publicEndpoint,
+            region: 'us-east-1',
+            credentials: {
+              accessKeyId: config.accessKeyId,
+              secretAccessKey: config.secretAccessKey,
+            },
+            forcePathStyle: true,
+          })
+        : this.s3Client;
   }
 
   async onModuleInit() {
@@ -72,7 +85,7 @@ export class S3Service implements OnModuleInit {
       Key: storageKey,
       ContentType: mimeType,
     });
-    return getSignedUrl(this.s3Client, command, { expiresIn });
+    return getSignedUrl(this.publicS3Client, command, { expiresIn });
   }
 
   /**
@@ -86,7 +99,7 @@ export class S3Service implements OnModuleInit {
       Bucket: this.bucket,
       Key: storageKey,
     });
-    return getSignedUrl(this.s3Client, command, { expiresIn });
+    return getSignedUrl(this.publicS3Client, command, { expiresIn });
   }
 
   /**
@@ -109,5 +122,54 @@ export class S3Service implements OnModuleInit {
       Key: storageKey,
     });
     return this.s3Client.send(command);
+  }
+
+  /**
+   * Directly uploads buffer/stream to S3/RustFS
+   */
+  async uploadBuffer(storageKey: string, buffer: Buffer, mimeType: string) {
+    const command = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: storageKey,
+      Body: buffer,
+      ContentType: mimeType,
+    });
+    return this.s3Client.send(command);
+  }
+
+  /**
+   * Directly fetches object stream and metadata from S3/RustFS
+   */
+  async getObject(storageKey: string) {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: storageKey,
+    });
+    return this.s3Client.send(command);
+  }
+
+  /**
+   * Fetches a small byte range from S3/RustFS (used for magic-byte verification)
+   */
+  async getObjectRange(storageKey: string, start: number, end: number): Promise<Buffer> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: storageKey,
+      Range: `bytes=${start}-${end}`,
+    });
+    const res = await this.s3Client.send(command);
+    const body = res.Body as any;
+    if (!body) return Buffer.alloc(0);
+
+    if (typeof body.transformToByteArray === 'function') {
+      const bytes = await body.transformToByteArray();
+      return Buffer.from(bytes);
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 }

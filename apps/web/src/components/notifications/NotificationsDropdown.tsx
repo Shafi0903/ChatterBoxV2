@@ -10,9 +10,13 @@ import { NotificationType } from '@chatterbox/shared';
 
 interface NotificationsDropdownProps {
   onClose: () => void;
+  triggerRef?: React.RefObject<HTMLElement | null>;
 }
 
-export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({ onClose }) => {
+export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
+  onClose,
+  triggerRef,
+}) => {
   const router = useRouter();
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -26,16 +30,20 @@ export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({ on
     markAllAsRead,
   } = useNotificationStore();
 
-  // Close when clicking outside
+  // Close when clicking outside (ignoring the bell trigger button so its onClick toggles cleanly)
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (triggerRef?.current && triggerRef.current.contains(target)) {
+        return;
+      }
+      if (dropdownRef.current && !dropdownRef.current.contains(target)) {
         onClose();
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose]);
+  }, [onClose, triggerRef]);
 
   const handleNotificationClick = async (notif: any) => {
     if (!notif.readAt) {

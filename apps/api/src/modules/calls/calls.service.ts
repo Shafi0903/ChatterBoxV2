@@ -121,48 +121,68 @@ export class CallsService implements OnModuleDestroy {
     }
     const calleeId = calleeMember.userId;
 
-    // 2. Check if either caller or callee is currently in a RINGING or ACTIVE call
-    const activeCall = await this.prisma.call.findFirst({
-      where: {
-        status: { in: [CallStatus.RINGING, CallStatus.ACTIVE] },
-        OR: [
-          { callerId },
-          { calleeId: callerId },
-          { callerId: calleeId },
-          { calleeId },
-        ],
-      },
+    // 2 & 3. Atomically check active call & create Call record using sorted advisory locks
+    const [lockA, lockB] = [callerId, calleeId].sort();
+    const txResult = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockA}))`;
+      if (lockB !== lockA) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockB}))`;
+      }
+
+      const activeCall = await tx.call.findFirst({
+        where: {
+          status: { in: [CallStatus.RINGING, CallStatus.ACTIVE] },
+          OR: [
+            { callerId },
+            { calleeId: callerId },
+            { callerId: calleeId },
+            { calleeId },
+          ],
+        },
+      });
+
+      if (activeCall) {
+        return { busy: true as const, activeCallId: activeCall.id };
+      }
+
+      const created = await tx.call.create({
+        data: {
+          conversationId,
+          callerId,
+          calleeId,
+          type,
+          status: CallStatus.RINGING,
+        },
+        include: {
+          caller: { include: { profile: true } },
+          callee: { include: { profile: true } },
+        },
+      });
+
+      return { busy: false as const, callRecord: created };
     });
 
-    if (activeCall) {
+    if (txResult.busy) {
       this.realtimeService.emitToUser(callerId, SocketEvents.CALL_BUSY, {
         conversationId,
-        callId: activeCall.id,
+        callId: txResult.activeCallId,
         reason: 'User is busy with another call',
       });
       return { ok: false, busy: true, error: 'BUSY' };
     }
 
-    // 3. Create Call record in DB
-    const callRecord = await this.prisma.call.create({
-      data: {
-        conversationId,
-        callerId,
-        calleeId,
-        type,
-        status: CallStatus.RINGING,
-      },
-      include: {
-        caller: { include: { profile: true } },
-        callee: { include: { profile: true } },
-      },
-    });
-
+    const callRecord = txResult.callRecord;
     const callItem = this.formatCallItem(callRecord);
 
-    // 4. Set 45-second ring timeout
+    // 4. Set 45-second ring timeout (guarded against unhandled rejections)
     const timer = setTimeout(async () => {
-      await this.handleRingTimeout(callRecord.id);
+      try {
+        await this.handleRingTimeout(callRecord.id);
+      } catch (err: any) {
+        this.logger.error(
+          `Ring timeout handler failed for call ${callRecord.id}: ${err?.message || err}`,
+        );
+      }
     }, 45000);
     timer.unref();
     this.ringTimers.set(callRecord.id, timer);
@@ -181,10 +201,6 @@ export class CallsService implements OnModuleDestroy {
   async acceptCall(userId: string, callId: string): Promise<CallItem> {
     const call = await this.prisma.call.findUnique({
       where: { id: callId },
-      include: {
-        caller: { include: { profile: true } },
-        callee: { include: { profile: true } },
-      },
     });
 
     if (!call) {
@@ -195,24 +211,35 @@ export class CallsService implements OnModuleDestroy {
       throw new ForbiddenException('Only the callee can accept this call');
     }
 
-    if (call.status !== CallStatus.RINGING) {
-      throw new BadRequestException(`Cannot accept call with status: ${call.status}`);
-    }
-
-    this.clearRingTimer(call.id);
-
     const startedAt = new Date();
-    const updated = await this.prisma.call.update({
-      where: { id: callId },
+    const transition = await this.prisma.call.updateMany({
+      where: {
+        id: callId,
+        status: CallStatus.RINGING,
+      },
       data: {
         status: CallStatus.ACTIVE,
         startedAt,
       },
+    });
+
+    if (transition.count === 0) {
+      const latest = await this.prisma.call.findUnique({ where: { id: callId } });
+      throw new BadRequestException(`Cannot accept call with status: ${latest?.status ?? call.status}`);
+    }
+
+    this.clearRingTimer(call.id);
+
+    const updated = await this.prisma.call.findUnique({
+      where: { id: callId },
       include: {
         caller: { include: { profile: true } },
         callee: { include: { profile: true } },
       },
     });
+    if (!updated) {
+      throw new NotFoundException('Call not found');
+    }
 
     const payload = {
       callId: updated.id,
@@ -220,7 +247,6 @@ export class CallsService implements OnModuleDestroy {
       startedAt: updated.startedAt,
     };
 
-    // Multi-tab sync: emit to both caller and callee rooms
     this.realtimeService.emitToUser(updated.callerId, SocketEvents.CALL_ACCEPTED, payload);
     this.realtimeService.emitToUser(updated.calleeId, SocketEvents.CALL_ACCEPTED, payload);
 
@@ -233,10 +259,6 @@ export class CallsService implements OnModuleDestroy {
   async rejectCall(userId: string, callId: string): Promise<CallItem> {
     const call = await this.prisma.call.findUnique({
       where: { id: callId },
-      include: {
-        caller: { include: { profile: true } },
-        callee: { include: { profile: true } },
-      },
     });
 
     if (!call) {
@@ -247,24 +269,35 @@ export class CallsService implements OnModuleDestroy {
       throw new ForbiddenException('Only the callee can reject this call');
     }
 
-    if (call.status !== CallStatus.RINGING) {
-      throw new BadRequestException(`Cannot reject call with status: ${call.status}`);
-    }
-
-    this.clearRingTimer(call.id);
-
     const endedAt = new Date();
-    const updated = await this.prisma.call.update({
-      where: { id: callId },
+    const transition = await this.prisma.call.updateMany({
+      where: {
+        id: callId,
+        status: CallStatus.RINGING,
+      },
       data: {
         status: CallStatus.REJECTED,
         endedAt,
       },
+    });
+
+    if (transition.count === 0) {
+      const latest = await this.prisma.call.findUnique({ where: { id: callId } });
+      throw new BadRequestException(`Cannot reject call with status: ${latest?.status ?? call.status}`);
+    }
+
+    this.clearRingTimer(call.id);
+
+    const updated = await this.prisma.call.findUnique({
+      where: { id: callId },
       include: {
         caller: { include: { profile: true } },
         callee: { include: { profile: true } },
       },
     });
+    if (!updated) {
+      throw new NotFoundException('Call not found');
+    }
 
     const payload = {
       callId: updated.id,
@@ -272,7 +305,6 @@ export class CallsService implements OnModuleDestroy {
       reason: 'rejected',
     };
 
-    // Multi-tab sync: emit to both caller and callee rooms
     this.realtimeService.emitToUser(updated.callerId, SocketEvents.CALL_REJECTED, payload);
     this.realtimeService.emitToUser(updated.calleeId, SocketEvents.CALL_REJECTED, payload);
 
@@ -299,7 +331,6 @@ export class CallsService implements OnModuleDestroy {
       throw new ForbiddenException('You are not a participant in this call');
     }
 
-    // Idempotent if already terminated
     if (
       call.status === CallStatus.ENDED ||
       call.status === CallStatus.REJECTED ||
@@ -320,16 +351,6 @@ export class CallsService implements OnModuleDestroy {
       if (userId === call.callerId) {
         newStatus = CallStatus.MISSED;
         reason = 'canceled';
-
-        // Notify callee of missed call
-        await this.notificationsService.createNotification({
-          userId: call.calleeId,
-          actorId: call.callerId,
-          type: 'MISSED_CALL',
-          conversationId: call.conversationId,
-          title: 'Missed Call',
-          body: `You missed a ${call.type.toLowerCase()} call from ${call.caller.profile?.displayName || call.caller.username}`,
-        });
       } else {
         newStatus = CallStatus.REJECTED;
         reason = 'canceled';
@@ -341,18 +362,51 @@ export class CallsService implements OnModuleDestroy {
       }
     }
 
-    const updated = await this.prisma.call.update({
-      where: { id: callId },
+    const transition = await this.prisma.call.updateMany({
+      where: {
+        id: callId,
+        status: call.status,
+      },
       data: {
         status: newStatus,
         endedAt,
         durationSec,
       },
+    });
+
+    if (transition.count === 0) {
+      const latest = await this.prisma.call.findUnique({
+        where: { id: callId },
+        include: {
+          caller: { include: { profile: true } },
+          callee: { include: { profile: true } },
+        },
+      });
+      if (!latest) throw new NotFoundException('Call not found');
+      return this.formatCallItem(latest);
+    }
+
+    if (call.status === CallStatus.RINGING && userId === call.callerId) {
+      await this.notificationsService.createNotification({
+        userId: call.calleeId,
+        actorId: call.callerId,
+        type: 'MISSED_CALL',
+        conversationId: call.conversationId,
+        title: 'Missed Call',
+        body: `You missed a ${call.type.toLowerCase()} call from ${call.caller.profile?.displayName || call.caller.username}`,
+      });
+    }
+
+    const updated = await this.prisma.call.findUnique({
+      where: { id: callId },
       include: {
         caller: { include: { profile: true } },
         callee: { include: { profile: true } },
       },
     });
+    if (!updated) {
+      throw new NotFoundException('Call not found');
+    }
 
     const payload = {
       callId: updated.id,
@@ -361,7 +415,6 @@ export class CallsService implements OnModuleDestroy {
       durationSec,
     };
 
-    // Multi-tab sync: emit to both caller and callee rooms
     this.realtimeService.emitToUser(updated.callerId, SocketEvents.CALL_ENDED, payload);
     this.realtimeService.emitToUser(updated.calleeId, SocketEvents.CALL_ENDED, payload);
 
@@ -374,30 +427,33 @@ export class CallsService implements OnModuleDestroy {
   async handleRingTimeout(callId: string) {
     this.clearRingTimer(callId);
 
-    const call = await this.prisma.call.findUnique({
-      where: { id: callId },
-      include: {
-        caller: { include: { profile: true } },
-        callee: { include: { profile: true } },
-      },
-    });
-
-    if (!call || call.status !== CallStatus.RINGING) {
-      return;
-    }
-
     const endedAt = new Date();
-    const updated = await this.prisma.call.update({
-      where: { id: callId },
+    const transition = await this.prisma.call.updateMany({
+      where: {
+        id: callId,
+        status: CallStatus.RINGING,
+      },
       data: {
         status: CallStatus.MISSED,
         endedAt,
       },
+    });
+
+    if (transition.count === 0) {
+      return;
+    }
+
+    const updated = await this.prisma.call.findUnique({
+      where: { id: callId },
       include: {
         caller: { include: { profile: true } },
         callee: { include: { profile: true } },
       },
     });
+
+    if (!updated) {
+      return;
+    }
 
     const payload = {
       callId: updated.id,
@@ -405,11 +461,9 @@ export class CallsService implements OnModuleDestroy {
       durationSec: null,
     };
 
-    // Multi-tab sync: emit to both caller and callee rooms
     this.realtimeService.emitToUser(updated.callerId, SocketEvents.CALL_ENDED, payload);
     this.realtimeService.emitToUser(updated.calleeId, SocketEvents.CALL_ENDED, payload);
 
-    // Create MISSED_CALL notification for callee
     await this.notificationsService.createNotification({
       userId: updated.calleeId,
       actorId: updated.callerId,
@@ -429,10 +483,6 @@ export class CallsService implements OnModuleDestroy {
         status: { in: [CallStatus.RINGING, CallStatus.ACTIVE] },
         OR: [{ callerId: userId }, { calleeId: userId }],
       },
-      include: {
-        caller: { include: { profile: true } },
-        callee: { include: { profile: true } },
-      },
     });
 
     for (const call of activeCalls) {
@@ -447,22 +497,25 @@ export class CallsService implements OnModuleDestroy {
         durationSec = Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000));
       }
 
-      const updated = await this.prisma.call.update({
-        where: { id: call.id },
+      const transition = await this.prisma.call.updateMany({
+        where: {
+          id: call.id,
+          status: call.status,
+        },
         data: {
           status: newStatus,
           endedAt,
           durationSec,
         },
-        include: {
-          caller: { include: { profile: true } },
-          callee: { include: { profile: true } },
-        },
       });
+
+      if (transition.count === 0) {
+        continue;
+      }
 
       const peerId = call.callerId === userId ? call.calleeId : call.callerId;
       const payload = {
-        callId: updated.id,
+        callId: call.id,
         endedBy: userId,
         reason: 'disconnected' as const,
         durationSec,

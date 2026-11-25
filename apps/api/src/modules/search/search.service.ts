@@ -162,15 +162,38 @@ export class SearchService {
       where: {
         deletedAt: null,
         content: { contains: q, mode: 'insensitive' },
-        OR: [
-          { visibility: 'PUBLIC' },
-          { authorId: callerId },
+        AND: [
           {
-            author: {
-              following: {
-                some: { followerId: callerId },
+            OR: [
+              { visibility: 'PUBLIC' },
+              { authorId: callerId },
+              {
+                author: {
+                  followers: {
+                    some: { followerId: callerId },
+                  },
+                },
               },
-            },
+            ],
+          },
+          {
+            OR: [
+              { authorId: callerId },
+              { author: { settings: { is: null } } },
+              { author: { settings: { is: { profileVisibility: 'PUBLIC' } } } },
+              {
+                AND: [
+                  { author: { settings: { is: { profileVisibility: 'FOLLOWERS_ONLY' } } } },
+                  {
+                    author: {
+                      followers: {
+                        some: { followerId: callerId },
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
           },
         ],
       },

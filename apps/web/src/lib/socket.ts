@@ -1,7 +1,20 @@
 import { io, Socket } from 'socket.io-client';
 import { api, getAccessToken } from './api';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:4000';
+function resolveWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    return process.env.NEXT_PUBLIC_WS_URL;
+  }
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname, port } = window.location;
+    // Bypass Next.js HTTP rewrites (which drop WS upgrades) when running directly on port 3000
+    if (port === '3000') {
+      return `${protocol}//${hostname}:4000`;
+    }
+    return window.location.origin;
+  }
+  return 'http://127.0.0.1:4000';
+}
 
 let activeSocket: Socket | null = null;
 let consecutiveAuthErrors = 0;
@@ -44,9 +57,9 @@ export function connectSocket(token?: string): Socket {
 
   consecutiveAuthErrors = 0;
 
-  activeSocket = io(WS_URL, {
+  activeSocket = io(resolveWsUrl(), {
     auth: { token: authToken },
-    transports: ['websocket'],
+    transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: 10,
     reconnectionDelay: 1000,

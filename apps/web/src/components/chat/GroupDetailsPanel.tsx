@@ -58,6 +58,7 @@ export const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({ onClose })
   // State for Member Removal confirmation
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [isLeaving, setIsLeaving] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const myRole = useMemo(() => {
     if (!activeConversationDetail || isDm) return 'MEMBER';
@@ -76,6 +77,7 @@ export const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({ onClose })
     if (!renamedTitle.trim()) return;
 
     setIsRenaming(true);
+    setActionError(null);
     try {
       await api.updateConversation(activeConversationDetail.id, {
         name: renamedTitle.trim(),
@@ -83,8 +85,8 @@ export const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({ onClose })
       await fetchConversations();
       await selectConversation(activeConversationDetail.id);
       setIsEditingName(false);
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to rename group.');
     } finally {
       setIsRenaming(false);
     }
@@ -110,6 +112,7 @@ export const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({ onClose })
 
   const handleAddMember = async (user: SearchUser) => {
     setIsAddingMember(true);
+    setActionError(null);
     try {
       await api.addGroupMembers(activeConversationDetail.id, [user.id]);
       await fetchConversations();
@@ -117,34 +120,36 @@ export const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({ onClose })
       setIsAddModalOpen(false);
       setAddSearchQuery('');
       setAddSearchResults([]);
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to add member.');
     } finally {
       setIsAddingMember(false);
     }
   };
 
   const handleRemoveMember = async (userId: string) => {
+    setActionError(null);
     try {
       await api.removeGroupMember(activeConversationDetail.id, userId);
       await fetchConversations();
       await selectConversation(activeConversationDetail.id);
       setRemovingUserId(null);
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to remove member.');
     }
   };
 
   const handleLeaveGroup = async () => {
     if (!currentUserId) return;
     setIsLeaving(true);
+    setActionError(null);
     try {
       await api.removeGroupMember(activeConversationDetail.id, currentUserId);
       await fetchConversations();
       await selectConversation(null);
       onClose();
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to leave group.');
     } finally {
       setIsLeaving(false);
     }
@@ -168,6 +173,14 @@ export const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({ onClose })
       </div>
 
       <div className="p-4 space-y-5 flex-1">
+        {actionError && (
+          <div className="p-2.5 rounded-xl bg-status-busy/10 border border-status-busy/25 text-[11px] text-status-busy flex items-center justify-between gap-2">
+            <span>{actionError}</span>
+            <button type="button" onClick={() => setActionError(null)} className="shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         {/* Conversation Info */}
         <div className="text-center pb-4 border-b border-border">
           <div className="w-16 h-16 rounded-full mx-auto mb-2 overflow-hidden bg-accent/20 border border-border flex items-center justify-center text-accent-bright font-bold text-lg">

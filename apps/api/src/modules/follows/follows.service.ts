@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FollowUserSummary } from '@chatterbox/shared';
+import { assertCanViewProfileContent } from '../../common/privacy/profile-visibility.util';
 
 @Injectable()
 export class FollowsService {
@@ -47,12 +48,19 @@ export class FollowsService {
       return { success: true, isFollowing: true };
     }
 
-    await this.prisma.follow.create({
-      data: {
-        followerId,
-        followingId: targetUserId,
-      },
-    });
+    try {
+      await this.prisma.follow.create({
+        data: {
+          followerId,
+          followingId: targetUserId,
+        },
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        return { success: true, isFollowing: true };
+      }
+      throw err;
+    }
 
     // Fetch follower details to construct notification
     const follower = await this.prisma.user.findUnique({
@@ -111,6 +119,8 @@ export class FollowsService {
     cursor?: string,
     limit = 20,
   ): Promise<{ data: FollowUserSummary[]; meta: { nextCursor: string | null; hasMore: boolean } }> {
+    await assertCanViewProfileContent(this.prisma, userId, callerId);
+
     const take = Math.min(Math.max(1, limit), 50);
 
     const follows = await this.prisma.follow.findMany({
@@ -131,16 +141,27 @@ export class FollowsService {
     const items = hasMore ? follows.slice(0, take) : follows;
     const nextCursor = hasMore ? items[items.length - 1].id : null;
 
-    // Check which users the caller is following
+    // Check which users the caller is following, and which users follow the caller
     const followerUserIds = items.map((f) => f.follower.id);
-    const callerFollows = await this.prisma.follow.findMany({
-      where: {
-        followerId: callerId,
-        followingId: { in: followerUserIds },
-      },
-      select: { followingId: true },
-    });
+    const [callerFollows, incomingFollows] = await Promise.all([
+      this.prisma.follow.findMany({
+        where: {
+          followerId: callerId,
+          followingId: { in: followerUserIds },
+        },
+        select: { followingId: true },
+      }),
+      this.prisma.follow.findMany({
+        where: {
+          followerId: { in: followerUserIds },
+          followingId: callerId,
+        },
+        select: { followerId: true },
+      }),
+    ]);
+
     const followedSet = new Set(callerFollows.map((f) => f.followingId));
+    const followsYouSet = new Set(incomingFollows.map((f) => f.followerId));
 
     const data: FollowUserSummary[] = items.map((f) => ({
       id: f.follower.id,
@@ -149,6 +170,7 @@ export class FollowsService {
       avatarUrl: f.follower.profile?.avatarUrl || null,
       bio: f.follower.profile?.bio || null,
       isFollowing: followedSet.has(f.follower.id),
+      followsYou: followsYouSet.has(f.follower.id),
     }));
 
     return { data, meta: { nextCursor, hasMore } };
@@ -163,6 +185,8 @@ export class FollowsService {
     cursor?: string,
     limit = 20,
   ): Promise<{ data: FollowUserSummary[]; meta: { nextCursor: string | null; hasMore: boolean } }> {
+    await assertCanViewProfileContent(this.prisma, userId, callerId);
+
     const take = Math.min(Math.max(1, limit), 50);
 
     const follows = await this.prisma.follow.findMany({
@@ -184,14 +208,25 @@ export class FollowsService {
     const nextCursor = hasMore ? items[items.length - 1].id : null;
 
     const followingUserIds = items.map((f) => f.following.id);
-    const callerFollows = await this.prisma.follow.findMany({
-      where: {
-        followerId: callerId,
-        followingId: { in: followingUserIds },
-      },
-      select: { followingId: true },
-    });
+    const [callerFollows, incomingFollows] = await Promise.all([
+      this.prisma.follow.findMany({
+        where: {
+          followerId: callerId,
+          followingId: { in: followingUserIds },
+        },
+        select: { followingId: true },
+      }),
+      this.prisma.follow.findMany({
+        where: {
+          followerId: { in: followingUserIds },
+          followingId: callerId,
+        },
+        select: { followerId: true },
+      }),
+    ]);
+
     const followedSet = new Set(callerFollows.map((f) => f.followingId));
+    const followsYouSet = new Set(incomingFollows.map((f) => f.followerId));
 
     const data: FollowUserSummary[] = items.map((f) => ({
       id: f.following.id,
@@ -200,6 +235,7 @@ export class FollowsService {
       avatarUrl: f.following.profile?.avatarUrl || null,
       bio: f.following.profile?.bio || null,
       isFollowing: followedSet.has(f.following.id),
+      followsYou: followsYouSet.has(f.following.id),
     }));
 
     return { data, meta: { nextCursor, hasMore } };

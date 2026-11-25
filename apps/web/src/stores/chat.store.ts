@@ -38,8 +38,10 @@ interface ChatState {
   // Real-time tracking
   presenceByUserId: Record<string, PresenceStatus>;
   typingByConversationId: Record<string, { userId: string; displayName: string }[]>;
+  peerKeyWarnings: Record<string, string>;
 
   // Actions
+  dismissPeerKeyWarning: (conversationId: string) => void;
   setConversationFilter: (filter: 'all' | 'dm' | 'group') => void;
   toggleDetails: () => void;
   setDetailsOpen: (open: boolean) => void;
@@ -67,6 +69,8 @@ interface ChatState {
 
 // Module-level map to track auto-clearing typing timeouts (4s)
 const typingTimeoutMap = new Map<string, NodeJS.Timeout>();
+// Tracks whether the current chat socket has completed its initial connect
+let hasConnectedOnce = false;
 
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
@@ -83,6 +87,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   replyingTo: null,
   presenceByUserId: {},
   typingByConversationId: {},
+  peerKeyWarnings: {},
+
+  dismissPeerKeyWarning: (conversationId) =>
+    set((state) => {
+      const next = { ...state.peerKeyWarnings };
+      delete next[conversationId];
+      return { peerKeyWarnings: next };
+    }),
 
   setConversationFilter: (filter) => {
     set({ conversationFilter: filter });
@@ -110,42 +122,72 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
       });
 
-      // User adjustment #2: Decrypt lastMessage for conversation previews
+      // Decrypt or safely mask lastMessage for conversation previews (never leak raw ciphertext)
+      const messagesCache = get().messagesByConversationId;
       const decryptedItems = await Promise.all(
         items.map(async (conv) => {
           if (conv.lastMessage && conv.lastMessage.content && currentUserId) {
-            const isEncrypted = conv.isEncrypted;
-            // If the conversation is encrypted, decrypt or provide fallback
-            if (isEncrypted) {
-              const decryptedPreview = await decryptMessageContent(
-                {
-                  id: conv.lastMessage.id,
-                  conversationId: conv.id,
-                  senderId: conv.lastMessage.senderId,
-                  content: conv.lastMessage.content,
-                  isEncrypted: true,
-                  e2eeHeader: (conv.lastMessage as any).e2eeHeader,
-                  clientMessageId: '',
-                  type: 'TEXT',
-                  replyToId: null,
-                  editedAt: null,
-                  deletedAt: null,
-                  createdAt: conv.lastMessage.createdAt,
-                  sender: {
-                    id: conv.lastMessage.senderId,
-                    username: conv.lastMessage.senderName,
-                    displayName: conv.lastMessage.senderName,
-                    avatarUrl: null,
-                  },
-                  reactions: [],
-                },
-                currentUserId,
+            if (conv.isEncrypted) {
+              // 1. Reuse already-decrypted message in store if available
+              const cachedMsg = (messagesCache[conv.id] || []).find(
+                (m) => m.id === conv.lastMessage!.id,
               );
+              if (cachedMsg && cachedMsg.content) {
+                return {
+                  ...conv,
+                  lastMessage: {
+                    ...conv.lastMessage,
+                    content: cachedMsg.content,
+                  },
+                };
+              }
+
+              // 2. If e2eeHeader is provided on lastMessage, decrypt directly
+              const header = (conv.lastMessage as { e2eeHeader?: unknown }).e2eeHeader;
+              if (header) {
+                const decryptedPreview = await decryptMessageContent(
+                  {
+                    id: conv.lastMessage.id,
+                    conversationId: conv.id,
+                    senderId: conv.lastMessage.senderId,
+                    content: conv.lastMessage.content,
+                    isEncrypted: true,
+                    e2eeHeader: header as any,
+                    clientMessageId: '',
+                    type: 'TEXT',
+                    replyToId: null,
+                    editedAt: null,
+                    deletedAt: null,
+                    createdAt: conv.lastMessage.createdAt,
+                    sender: {
+                      id: conv.lastMessage.senderId,
+                      username: conv.lastMessage.senderName,
+                      displayName: conv.lastMessage.senderName,
+                      avatarUrl: null,
+                    },
+                    reactions: [],
+                  },
+                  currentUserId,
+                );
+                return {
+                  ...conv,
+                  lastMessage: {
+                    ...conv.lastMessage,
+                    content: decryptedPreview,
+                  },
+                };
+              }
+
+              // 3. Otherwise never expose raw ciphertext in sidebar preview
+              const previewText =
+                conv.lastMessage.content === 'This message was deleted'
+                  ? 'This message was deleted'
+                  : '🔒 Encrypted message';
               return {
                 ...conv,
                 lastMessage: {
                   ...conv.lastMessage,
-                  content: decryptedPreview,
+                  content: previewText,
                 },
               };
             }
@@ -212,23 +254,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
           )
         : messagesRes.data;
 
-      set((state) => ({
-        activeConversationDetail: detail,
-        messagesByConversationId: {
-          ...state.messagesByConversationId,
-          [id]: decryptedMessages,
-        },
-        hasMoreByConversationId: {
-          ...state.hasMoreByConversationId,
-          [id]: messagesRes.meta.hasMore,
-        },
-        nextCursorByConversationId: {
-          ...state.nextCursorByConversationId,
-          [id]: messagesRes.meta.nextCursor,
-        },
-        presenceByUserId: newPresence,
-        isLoadingMessages: false,
-      }));
+      // API returns messages descending (newest first) for cursor pagination.
+      // Sort strictly ascending (oldest -> newest, top-to-bottom) for rendering and real-time appends.
+      const chronologicalMessages = [...decryptedMessages].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+
+      set((state) => {
+        const latestChronological = chronologicalMessages[chronologicalMessages.length - 1];
+        const updatedConvs = state.conversations.map((c) => {
+          if (
+            c.id === id &&
+            latestChronological &&
+            c.lastMessage &&
+            c.lastMessage.id === latestChronological.id
+          ) {
+            return {
+              ...c,
+              lastMessage: {
+                ...c.lastMessage,
+                content: latestChronological.content,
+              },
+            };
+          }
+          return c;
+        });
+
+        return {
+          activeConversationDetail: detail,
+          conversations: updatedConvs,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [id]: chronologicalMessages,
+          },
+          hasMoreByConversationId: {
+            ...state.hasMoreByConversationId,
+            [id]: messagesRes.meta.hasMore,
+          },
+          nextCursorByConversationId: {
+            ...state.nextCursorByConversationId,
+            [id]: messagesRes.meta.nextCursor,
+          },
+          presenceByUserId: newPresence,
+          isLoadingMessages: false,
+        };
+      });
 
       // Mark conversation read
       await get().markAsRead(id);
@@ -266,7 +336,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((state) => {
         const existing = state.messagesByConversationId[conversationId] || [];
         const existingIds = new Set(existing.map((m) => m.id));
-        const newOlder = decryptedMessages.filter((m) => !existingIds.has(m.id));
+        const newOlder = decryptedMessages
+          .filter((m) => !existingIds.has(m.id))
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
         return {
           messagesByConversationId: {
@@ -328,6 +400,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ciphertextPayload = encryptedResult.ciphertext;
         senderDeviceId = encryptedResult.senderDeviceId;
         e2eeHeader = encryptedResult.e2eeHeader;
+        if (encryptedResult.keyChangeWarning) {
+          set((s) => ({
+            peerKeyWarnings: {
+              ...s.peerKeyWarnings,
+              [conversationId]: encryptedResult.keyChangeWarning!,
+            },
+          }));
+        }
       } catch (err: any) {
         console.error('[E2EE] Message encryption failed:', err);
         throw err;
@@ -407,10 +487,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const socket = getSocket();
     if (socket && socket.connected) {
+      let ackSettled = false;
+      const ackTimer = setTimeout(() => {
+        if (!ackSettled) {
+          ackSettled = true;
+          set((state) => ({
+            messagesByConversationId: {
+              ...state.messagesByConversationId,
+              [conversationId]: (state.messagesByConversationId[conversationId] || []).map((m) =>
+                m.clientMessageId === clientMessageId || m.id === clientMessageId
+                  ? { ...m, status: 'FAILED' as const }
+                  : m,
+              ),
+            },
+          }));
+        }
+      }, 12000);
+
       socket.emit(
         SocketEvents.MESSAGE_SEND,
         sendPayload,
         (ack: { ok: boolean; message?: MessageItem; error?: string }) => {
+          if (ackSettled) return;
+          ackSettled = true;
+          clearTimeout(ackTimer);
           if (ack && ack.ok && ack.message) {
             // User adjustment #2: Preserve plaintext content in state message
             const serverMsg: MessageItem = {
@@ -480,6 +580,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           clientMessageId,
           content: ciphertextPayload,
           replyToId,
+          ...(attachmentIds && attachmentIds.length > 0 ? { attachmentIds } : {}),
           isEncrypted,
           senderDeviceId,
           e2eeHeader,
@@ -559,27 +660,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const isEncrypted = Boolean(targetConv?.isEncrypted);
     let ciphertextPayload = msg.content;
-    let senderDeviceId = msg.senderDeviceId;
-    let e2eeHeader = msg.e2eeHeader;
+    let senderDeviceId: string | undefined = msg.senderDeviceId ?? undefined;
+    let e2eeHeader = msg.e2eeHeader
+      ? { ...msg.e2eeHeader, version: 1 as const }
+      : undefined;
 
     if (isEncrypted) {
       try {
         const otherMember = targetConv?.members.find((m) => m.userId !== authUser.id);
-        if (otherMember) {
-          const encryptedResult = await encryptForConversation(
-            conversationId,
-            otherMember.userId,
-            authUser.id,
-            msg.content, // msg.content holds the plaintext in store
-          );
-          ciphertextPayload = encryptedResult.ciphertext;
-          senderDeviceId = encryptedResult.senderDeviceId;
-          e2eeHeader = encryptedResult.e2eeHeader;
+        if (!otherMember) {
+          throw new Error('Could not identify recipient for encrypted message');
         }
+        const encryptedResult = await encryptForConversation(
+          conversationId,
+          otherMember.userId,
+          authUser.id,
+          msg.content, // msg.content holds the plaintext in store
+        );
+        ciphertextPayload = encryptedResult.ciphertext;
+        senderDeviceId = encryptedResult.senderDeviceId;
+        e2eeHeader = encryptedResult.e2eeHeader;
       } catch (err) {
         console.error('[E2EE] Retry encryption failed:', err);
+        set((state) => ({
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [conversationId]: (state.messagesByConversationId[conversationId] || []).map((m) =>
+              m.clientMessageId === clientMessageId || m.id === clientMessageId
+                ? { ...m, status: 'FAILED' as const }
+                : m,
+            ),
+          },
+        }));
+        return;
       }
     }
+
+    const attachmentIds = (msg.attachments || [])
+      .map((a) => a.id)
+      .filter(Boolean);
 
     // Set to SENDING
     set((state) => {
@@ -596,8 +715,85 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
 
+    const applyRetrySuccess = (savedRaw: MessageItem) => {
+      const preservedMsg: MessageItem = {
+        ...savedRaw,
+        content: msg.content, // preserve plaintext
+      };
+      set((state) => {
+        const msgs = (state.messagesByConversationId[conversationId] || []).map((m) =>
+          m.clientMessageId === clientMessageId || m.id === clientMessageId
+            ? preservedMsg
+            : m,
+        );
+        const updatedConvs = state.conversations.map((c) =>
+          c.id === conversationId
+            ? {
+                ...c,
+                lastMessage: {
+                  id: preservedMsg.id,
+                  content: msg.content,
+                  senderId: preservedMsg.senderId,
+                  senderName: preservedMsg.sender.displayName || preservedMsg.sender.username,
+                  createdAt: preservedMsg.createdAt,
+                },
+                lastMessageAt: preservedMsg.createdAt,
+              }
+            : c,
+        );
+        return {
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [conversationId]: msgs,
+          },
+          conversations: updatedConvs,
+        };
+      });
+    };
+
+    const markRetryFailed = () => {
+      set((state) => {
+        const msgs = (state.messagesByConversationId[conversationId] || []).map((m) =>
+          m.clientMessageId === clientMessageId || m.id === clientMessageId
+            ? { ...m, status: 'FAILED' as const }
+            : m,
+        );
+        return {
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [conversationId]: msgs,
+          },
+        };
+      });
+    };
+
+    const restSendFallback = async () => {
+      try {
+        const savedRaw = await api.sendMessage(conversationId, {
+          clientMessageId: msg.clientMessageId,
+          content: ciphertextPayload,
+          replyToId: msg.replyToId || undefined,
+          ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+          isEncrypted,
+          senderDeviceId,
+          e2eeHeader,
+        });
+        applyRetrySuccess(savedRaw);
+      } catch {
+        markRetryFailed();
+      }
+    };
+
     const socket = getSocket();
     if (socket && socket.connected) {
+      let settled = false;
+      const ackTimer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          restSendFallback();
+        }
+      }, 10000);
+
       socket.emit(
         SocketEvents.MESSAGE_SEND,
         {
@@ -605,46 +801,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
           clientMessageId: msg.clientMessageId,
           content: ciphertextPayload,
           replyToId: msg.replyToId || undefined,
+          ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
           isEncrypted,
           senderDeviceId,
           e2eeHeader,
         },
         (ack: { ok: boolean; message?: MessageItem }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(ackTimer);
           if (ack && ack.ok && ack.message) {
-            const preservedMsg: MessageItem = {
-              ...ack.message,
-              content: msg.content, // preserve plaintext
-            };
-            set((state) => {
-              const msgs = (state.messagesByConversationId[conversationId] || []).map((m) =>
-                m.clientMessageId === clientMessageId || m.id === clientMessageId
-                  ? preservedMsg
-                  : m,
-              );
-              return {
-                messagesByConversationId: {
-                  ...state.messagesByConversationId,
-                  [conversationId]: msgs,
-                },
-              };
-            });
+            applyRetrySuccess(ack.message);
           } else {
-            set((state) => {
-              const msgs = (state.messagesByConversationId[conversationId] || []).map((m) =>
-                m.clientMessageId === clientMessageId || m.id === clientMessageId
-                  ? { ...m, status: 'FAILED' as const }
-                  : m,
-              );
-              return {
-                messagesByConversationId: {
-                  ...state.messagesByConversationId,
-                  [conversationId]: msgs,
-                },
-              };
-            });
+            markRetryFailed();
           }
         },
       );
+    } else {
+      await restSendFallback();
     }
   },
 
@@ -691,7 +865,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     try {
-      const updatedRaw = await api.editMessage(messageId, ciphertext);
+      const updatedRaw = await api.editMessage(
+        messageId,
+        ciphertext,
+        isEncrypted ? { senderDeviceId, e2eeHeader } : undefined,
+      );
       const updated: MessageItem = {
         ...updatedRaw,
         content, // Preserve decrypted plaintext locally
@@ -715,23 +893,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteMessage: async (messageId) => {
-    try {
-      const deleted = await api.deleteMessage(messageId);
-      set((state) => {
-        const conversationId = deleted.conversationId;
-        const msgs = (state.messagesByConversationId[conversationId] || []).map((m) =>
-          m.id === messageId ? deleted : m,
-        );
-        return {
-          messagesByConversationId: {
-            ...state.messagesByConversationId,
-            [conversationId]: msgs,
-          },
-        };
-      });
-    } catch (err) {
-      throw err;
+    const stateBefore = get();
+    let targetConvId = stateBefore.activeConversationId || '';
+    for (const [convId, list] of Object.entries(stateBefore.messagesByConversationId)) {
+      if (list.some((m) => m.id === messageId)) {
+        targetConvId = convId;
+        break;
+      }
     }
+
+    const deleted = await api.deleteMessage(messageId);
+    const conversationId = deleted?.conversationId || targetConvId;
+    if (!conversationId) return;
+
+    const deletedAt = deleted?.deletedAt || new Date().toISOString();
+
+    set((state) => {
+      const msgs = (state.messagesByConversationId[conversationId] || []).map((m) =>
+        m.id === messageId
+          ? deleted || {
+              ...m,
+              content: 'This message was deleted',
+              deletedAt,
+              attachments: [],
+            }
+          : m,
+      );
+      const updatedConvs = state.conversations.map((c) =>
+        c.id === conversationId && c.lastMessage?.id === messageId
+          ? {
+              ...c,
+              lastMessage: {
+                ...c.lastMessage,
+                content: 'This message was deleted',
+              },
+            }
+          : c,
+      );
+      return {
+        messagesByConversationId: {
+          ...state.messagesByConversationId,
+          [conversationId]: msgs,
+        },
+        conversations: updatedConvs,
+      };
+    });
   },
 
   toggleReaction: async (messageId, emoji) => {
@@ -793,12 +999,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   markAsRead: async (conversationId) => {
     const messages = get().messagesByConversationId[conversationId] || [];
-    const latest = messages[messages.length - 1];
+    const latest = [...messages].reverse().find((m) => m.status !== 'SENDING' && m.status !== 'FAILED');
+
+    if (!latest?.id) {
+      set((state) => ({
+        conversations: state.conversations.map((c) =>
+          c.id === conversationId ? { ...c, unreadCount: 0 } : c,
+        ),
+      }));
+      return;
+    }
 
     try {
-      await api.markConversationRead(conversationId, latest?.id);
+      await api.markConversationRead(conversationId, latest.id);
       const socket = getSocket();
-      if (socket && socket.connected && latest) {
+      if (socket && socket.connected) {
         socket.emit(SocketEvents.MESSAGE_READ, {
           conversationId,
           lastReadMessageId: latest.id,
@@ -839,7 +1054,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     socket.off(SocketEvents.TYPING_UPDATE);
     socket.off(SocketEvents.PRESENCE_CHANGED);
     socket.off(SocketEvents.CONVERSATION_UPDATED);
-    socket.off('reconnect');
+    socket.off('connect');
 
     // 1. New Message Event
     socket.on(SocketEvents.MESSAGE_NEW, async (payload: { message: MessageItem }) => {
@@ -848,7 +1063,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const isMyMessage = msg.senderId === currentUserId;
       const { activeConversationId } = get();
 
-      // User adjustment #2: If incoming message is encrypted, decrypt client-side immediately
+      // If incoming message is encrypted, decrypt client-side immediately
       if (msg.isEncrypted && currentUserId) {
         if (!isMyMessage) {
           const decrypted = await decryptMessageContent(msg, currentUserId);
@@ -858,7 +1073,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const existing = (get().messagesByConversationId[msg.conversationId] || []).find(
             (m) => m.clientMessageId === msg.clientMessageId || m.id === msg.id,
           );
-          if (existing && existing.content && !existing.content.startsWith('ey')) {
+          if (existing && existing.content && !existing.content.startsWith('🔒')) {
             msg = { ...msg, content: existing.content };
           } else {
             const decrypted = await decryptMessageContent(msg, currentUserId);
@@ -1018,8 +1233,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         const updated = list.map((m) =>
           m.id === payload.messageId
-            ? { ...m, content: 'This message was deleted', deletedAt: payload.deletedAt }
+            ? { ...m, content: 'This message was deleted', deletedAt: payload.deletedAt, attachments: [] }
             : m,
+        );
+
+        const updatedConvs = state.conversations.map((c) =>
+          c.id === convId && c.lastMessage?.id === payload.messageId
+            ? {
+                ...c,
+                lastMessage: {
+                  ...c.lastMessage,
+                  content: 'This message was deleted',
+                },
+              }
+            : c,
         );
 
         return {
@@ -1027,6 +1254,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...state.messagesByConversationId,
             [convId]: updated,
           },
+          conversations: updatedConvs,
         };
       });
     });
@@ -1143,21 +1371,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     );
 
-    // 9. Reconnect Catch-Up
-    socket.on('reconnect', async () => {
-      // Re-fetch conversations
-      await get().fetchConversations();
+    // 9. Connect & Reconnect Catch-Up (Socket.IO v4 emits 'connect' on Socket for both initial connect and reconnect)
+    socket.on('connect', async () => {
+      const isReconnect = hasConnectedOnce;
+      hasConnectedOnce = true;
 
-      // If viewing active chat, re-join room and fetch latest messages
       const activeId = get().activeConversationId;
       if (activeId) {
         socket.emit(SocketEvents.CONVERSATION_JOIN, { conversationId: activeId });
+      }
+
+      if (!isReconnect) return;
+
+      // Re-fetch conversations on reconnect
+      await get().fetchConversations();
+
+      // If viewing active chat, fetch latest messages and decrypt E2EE payloads
+      if (activeId) {
         try {
           const res = await api.getMessages(activeId, undefined, 50);
+          const currentUserId = useAuthStore.getState().user?.id;
+          const existingList = get().messagesByConversationId[activeId] || [];
+
+          const decryptedFetched = currentUserId
+            ? await Promise.all(
+                res.data.map(async (m) => {
+                  if (m.isEncrypted) {
+                    const existingMatch = existingList.find(
+                      (ex) => ex.id === m.id || (m.clientMessageId && ex.clientMessageId === m.clientMessageId),
+                    );
+                    if (
+                      m.senderId === currentUserId &&
+                      existingMatch &&
+                      existingMatch.content &&
+                      !existingMatch.content.startsWith('🔒') &&
+                      !m.editedAt
+                    ) {
+                      return { ...m, content: existingMatch.content };
+                    }
+                    const plaintext = await decryptMessageContent(m, currentUserId);
+                    return { ...m, content: plaintext };
+                  }
+                  return m;
+                }),
+              )
+            : res.data;
+
           set((state) => {
             const existing = state.messagesByConversationId[activeId] || [];
             const existingMap = new Map(existing.map((m) => [m.id, m]));
-            res.data.forEach((m) => existingMap.set(m.id, m));
+            decryptedFetched.forEach((m) => existingMap.set(m.id, m));
             const merged = Array.from(existingMap.values()).sort(
               (a, b) =>
                 new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
@@ -1171,13 +1434,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
             };
           });
         } catch {
-          // Ignore
+          // Non-fatal catch-up error
         }
       }
     });
   },
 
   resetChatState: () => {
+    hasConnectedOnce = false;
     typingTimeoutMap.forEach((t) => clearTimeout(t));
     typingTimeoutMap.clear();
     set({
@@ -1195,6 +1459,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       replyingTo: null,
       presenceByUserId: {},
       typingByConversationId: {},
+      peerKeyWarnings: {},
     });
   },
 

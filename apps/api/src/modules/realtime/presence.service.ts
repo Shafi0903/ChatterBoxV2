@@ -1,10 +1,12 @@
-import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { PresenceStatus } from '@chatterbox/shared';
 import { RedisService } from '../../common/redis/redis.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
+const PRESENCE_KEY_TTL_SECONDS = 3600; // 1 hour safety TTL
+
 @Injectable()
-export class PresenceService implements OnModuleDestroy {
+export class PresenceService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PresenceService.name);
   private activeTimers: Map<string, NodeJS.Timeout> = new Map();
 
@@ -13,8 +15,35 @@ export class PresenceService implements OnModuleDestroy {
     private prisma: PrismaService,
   ) {}
 
+  async onModuleInit() {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+
+    // Clear stale presence sets left behind by an unclean server shutdown
+    try {
+      const client = this.redis.getClient();
+      if (!client) return;
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await client.scan(
+          cursor,
+          'MATCH',
+          'presence:sockets:*',
+          'COUNT',
+          200,
+        );
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          await client.del(...keys);
+        }
+      } while (cursor !== '0');
+    } catch (err: any) {
+      this.logger.warn(`Failed to clear stale Redis presence keys on startup: ${err?.message || err}`);
+    }
+  }
+
   onModuleDestroy() {
-    // Clear all pending disconnect timers for clean Jest test exits
     this.activeTimers.forEach((timer) => clearTimeout(timer));
     this.activeTimers.clear();
   }
@@ -25,7 +54,6 @@ export class PresenceService implements OnModuleDestroy {
    * Returns true if user transitioned 0 -> 1 (became ONLINE).
    */
   async addSocket(userId: string, socketId: string): Promise<boolean> {
-    // Cancel pending disconnect timer if user reconnects within grace period
     const existingTimer = this.activeTimers.get(userId);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -35,6 +63,7 @@ export class PresenceService implements OnModuleDestroy {
     const key = `presence:sockets:${userId}`;
     const initialCount = await this.redis.scard(key);
     await this.redis.sadd(key, socketId);
+    await this.redis.getClient().expire(key, PRESENCE_KEY_TTL_SECONDS);
 
     return initialCount === 0;
   }
@@ -52,26 +81,34 @@ export class PresenceService implements OnModuleDestroy {
     await this.redis.srem(key, socketId);
     const remaining = await this.redis.scard(key);
 
-    if (remaining === 0) {
-      // Configurable grace period: 150ms in test, 5000ms in dev/prod
-      const graceMs = process.env.NODE_ENV === 'test' ? 150 : 5000;
+    if (remaining > 0) {
+      await this.redis.getClient().expire(key, PRESENCE_KEY_TTL_SECONDS);
+      return;
+    }
 
-      // Cancel prior timer if any
-      const existing = this.activeTimers.get(userId);
-      if (existing) {
-        clearTimeout(existing);
-      }
+    const graceMs = process.env.NODE_ENV === 'test' ? 150 : 5000;
 
-      const timer = setTimeout(async () => {
+    const existing = this.activeTimers.get(userId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timer = setTimeout(async () => {
+      try {
         this.activeTimers.delete(userId);
         const currentCount = await this.redis.scard(key);
         if (currentCount === 0) {
+          await this.redis.del(key);
           await onGraceExpire(userId);
         }
-      }, graceMs);
+      } catch (err: any) {
+        this.logger.error(
+          `Presence grace expiry handler failed for user ${userId}: ${err?.message || err}`,
+        );
+      }
+    }, graceMs);
 
-      this.activeTimers.set(userId, timer);
-    }
+    this.activeTimers.set(userId, timer);
   }
 
   /**
@@ -107,7 +144,6 @@ export class PresenceService implements OnModuleDestroy {
       return resultMap;
     }
 
-    // Query all settings to check showOnlineStatus
     const settingsList = await this.prisma.userSettings.findMany({
       where: { userId: { in: userIds } },
       select: { userId: true, showOnlineStatus: true },
@@ -115,7 +151,6 @@ export class PresenceService implements OnModuleDestroy {
     const privacyMap = new Map<string, boolean>();
     settingsList.forEach((s) => privacyMap.set(s.userId, s.showOnlineStatus));
 
-    // Check Redis counts
     await Promise.all(
       userIds.map(async (userId) => {
         const canShow = privacyMap.get(userId) ?? true;

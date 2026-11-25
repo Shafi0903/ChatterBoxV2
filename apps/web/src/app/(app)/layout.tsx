@@ -34,10 +34,14 @@ export default function AppLayout({
       useChatStore.getState().initSocketListeners();
       useNotificationStore.getState().initSocketListeners();
       useCallStore.getState().initSocketListeners();
-      useNotificationStore.getState().fetchNotifications();
-      initializeDeviceKeys(user).then(() => {
-        useChatStore.getState().fetchConversations();
+      useNotificationStore.getState().fetchNotifications().catch((err) => {
+        console.error('Failed to fetch initial notifications:', err);
       });
+      initializeDeviceKeys(user)
+        .then(() => useChatStore.getState().fetchConversations())
+        .catch((err) => {
+          console.error('Failed to initialize device keys or conversations:', err);
+        });
     }
   }, [isInitialized, user]);
 
@@ -61,8 +65,8 @@ export default function AppLayout({
     }
   }, [user, isInitialized, router]);
 
-  // Loading skeleton while restoring session on page reload
-  if (!isInitialized) {
+  // Loading skeleton while restoring session on page reload or unauthenticated redirect
+  if (!isInitialized || !user) {
     return (
       <div className="flex h-screen w-screen bg-canvas">
         {/* Sidebar skeleton */}
@@ -95,11 +99,6 @@ export default function AppLayout({
     );
   }
 
-  // If unauthenticated, redirecting
-  if (!user) {
-    return null;
-  }
-
   return (
     <div className="min-h-screen bg-canvas text-primary flex">
       {/* Desktop Fixed Sidebar */}
@@ -110,12 +109,12 @@ export default function AppLayout({
         {/* Fixed Top Bar */}
         <TopBar onOpenSearch={() => setIsSearchOpen(true)} />
 
-        {/* Page Content: Full-bleed for messages 3-pane dashboard, constrained for other pages */}
+        {/* Page Content: Full-bleed for messages and communities 3-pane dashboards, constrained for other pages */}
         <main
           className={cn(
             'flex-1 pt-16 min-w-0',
-            pathname.startsWith('/messages')
-              ? 'h-screen pb-16 md:pb-0 overflow-hidden p-2 md:p-3'
+            pathname.startsWith('/messages') || pathname.startsWith('/communities')
+              ? 'h-screen pb-16 md:pb-0 overflow-hidden'
               : 'pb-20 md:pb-6 px-4 md:px-8 max-w-7xl w-full mx-auto',
           )}
         >

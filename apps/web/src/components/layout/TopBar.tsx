@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Bell } from 'lucide-react';
 import NextLink from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
@@ -18,6 +18,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const { user, profile, settings, updateSettingsState } = useAuthStore();
   const { resolvedTheme, setTheme } = useThemeStore();
   const [showNotifications, setShowNotifications] = useState(false);
+  const bellButtonRef = useRef<HTMLButtonElement>(null);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
 
   const toggleTheme = async () => {
@@ -96,7 +97,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
         {/* Notifications Popover Trigger */}
         <div className="relative">
           <button
-            onClick={() => setShowNotifications(!showNotifications)}
+            ref={bellButtonRef}
+            onClick={() => setShowNotifications((prev) => !prev)}
             title="Notifications"
             aria-label="Notifications"
             className="p-2 rounded-xl text-secondary hover:text-primary hover:bg-surface-hover border border-transparent hover:border-border transition-colors relative"
@@ -111,7 +113,10 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
           </button>
 
           {showNotifications && (
-            <NotificationsDropdown onClose={() => setShowNotifications(false)} />
+            <NotificationsDropdown
+              onClose={() => setShowNotifications(false)}
+              triggerRef={bellButtonRef}
+            />
           )}
         </div>
 

@@ -22,6 +22,7 @@ import {
   CursorPaginationMeta,
   MessageReactionItem,
   RegisterDeviceDto,
+  RotateSignedPreKeyDto,
   ReplenishPreKeysDto,
   DeviceSummary,
   UserKeyBundleResponse,
@@ -63,10 +64,35 @@ import {
 import { updateSocketToken } from './socket';
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+  process.env.NEXT_PUBLIC_API_URL ||
+  (typeof window !== 'undefined' ? '/api/v1' : 'http://127.0.0.1:4000/api/v1');
 
 // In-memory access token storage — never localStorage
 let memoryAccessToken: string | null = null;
+
+const SESSION_HINT_KEY = 'chatterbox_has_session';
+
+export function hasSessionHint(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(SESSION_HINT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setSessionHint(active: boolean) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (active) {
+      window.localStorage.setItem(SESSION_HINT_KEY, '1');
+    } else {
+      window.localStorage.removeItem(SESSION_HINT_KEY);
+    }
+  } catch {
+    // Ignore storage access errors in restricted browsing modes
+  }
+}
 
 // Module-level single-flight refresh promise to guarantee strict mode safety
 let refreshPromise: Promise<string | null> | null = null;
@@ -99,14 +125,113 @@ export function getAccessToken(): string | null {
   return memoryAccessToken;
 }
 
+export interface UploadMediaOptions {
+  attachmentId: string;
+  uploadUrl: string;
+  file: Blob;
+  contentType: string;
+  onProgress?: (percent: number) => void;
+}
+
+function sendXhrPut(
+  url: string,
+  body: Blob,
+  contentType: string,
+  options: {
+    withCredentials: boolean;
+    bearerToken?: string | null;
+    onProgress?: (percent: number) => void;
+  },
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url, true);
+    xhr.withCredentials = options.withCredentials;
+    xhr.setRequestHeader('Content-Type', contentType);
+    if (options.bearerToken) {
+      xhr.setRequestHeader('Authorization', `Bearer ${options.bearerToken}`);
+    }
+
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable && options.onProgress) {
+        options.onProgress(Math.round((evt.loaded / evt.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        const err = new Error(`Upload failed with status ${xhr.status}`) as Error & { status?: number };
+        err.status = xhr.status;
+        reject(err);
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error uploading file'));
+    xhr.send(body);
+  });
+}
+
+/**
+ * Uploads media directly to the presigned S3 URL, falling back to the
+ * authenticated API relay endpoint with Authorization: Bearer + 401 refresh retry.
+ */
+export async function uploadMediaWithFallback({
+  attachmentId,
+  uploadUrl,
+  file,
+  contentType,
+  onProgress,
+}: UploadMediaOptions): Promise<void> {
+  try {
+    await sendXhrPut(uploadUrl, file, contentType, {
+      withCredentials: false,
+      onProgress,
+    });
+    return;
+  } catch {
+    // Fall back to authenticated API proxy relay
+  }
+
+  const relayUrl = `${API_BASE_URL}/media/${attachmentId}/upload`;
+  let token = getAccessToken();
+  if (!token) {
+    token = await refreshAccessToken();
+  }
+
+  try {
+    await sendXhrPut(relayUrl, file, contentType, {
+      withCredentials: true,
+      bearerToken: token,
+      onProgress,
+    });
+  } catch (err: any) {
+    if (err?.status === 401) {
+      const freshToken = await refreshAccessToken();
+      if (freshToken) {
+        await sendXhrPut(relayUrl, file, contentType, {
+          withCredentials: true,
+          bearerToken: freshToken,
+          onProgress,
+        });
+        return;
+      }
+    }
+    throw err;
+  }
+}
+
 export class ApiError extends Error {
   code: string;
+  status: number;
   details?: unknown[];
 
-  constructor(message: string, code: string, details?: unknown[]) {
+  constructor(message: string, code: string, status = 500, details?: unknown[]) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
+    this.status = status;
     this.details = details;
   }
 }
@@ -123,8 +248,16 @@ async function handleResponse<T>(res: Response): Promise<T> {
     throw new ApiError(
       error?.message || `Request failed with status ${res.status}`,
       error?.code || 'API_ERROR',
+      res.status,
       error?.details,
     );
+  }
+
+  // If the response envelope includes a top-level `meta` field (e.g. paginated endpoints
+  // returning { data: [...], meta: { ... } }), preserve the full envelope { data, meta }
+  // so callers accessing res.data and res.meta receive both.
+  if (json && typeof json === 'object' && 'data' in json && 'meta' in json) {
+    return json as T;
   }
 
   return (json?.data !== undefined ? json.data : json) as T;
@@ -150,6 +283,7 @@ export async function refreshAccessToken(): Promise<string | null> {
 
       if (!res.ok) {
         setAccessToken(null);
+        setSessionHint(false);
         return null;
       }
 
@@ -157,11 +291,13 @@ export async function refreshAccessToken(): Promise<string | null> {
       const token = json?.data?.accessToken || json?.accessToken;
       if (token) {
         setAccessToken(token);
+        setSessionHint(true);
         processQueue(null);
         return token;
       }
 
       setAccessToken(null);
+      setSessionHint(false);
       return null;
     } catch {
       setAccessToken(null);
@@ -221,7 +357,7 @@ export async function apiRequest<T>(
         // Trigger refresh if not already pending
         refreshAccessToken().then((token) => {
           if (!token) {
-            processQueue(new ApiError('Session expired. Please log in again.', 'UNAUTHORIZED'));
+            processQueue(new ApiError('Session expired. Please log in again.', 'UNAUTHORIZED', 401));
           }
         });
       });
@@ -277,6 +413,11 @@ export const api = {
         bio: string | null;
       }>
     >(`/users/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+
+  deleteAccount: () =>
+    apiRequest<{ success: true }>('/users/me', {
+      method: 'DELETE',
+    }),
 
   // Settings
   getSettings: () => apiRequest<UserSettings>('/settings/me'),
@@ -345,14 +486,22 @@ export const api = {
       body: JSON.stringify(dto),
     }),
 
-  editMessage: (messageId: string, content: string) =>
+  editMessage: (
+    messageId: string,
+    content: string,
+    e2ee?: { senderDeviceId?: string; e2eeHeader?: unknown },
+  ) =>
     apiRequest<MessageItem>(`/messages/${messageId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(e2ee?.senderDeviceId ? { senderDeviceId: e2ee.senderDeviceId } : {}),
+        ...(e2ee?.e2eeHeader ? { e2eeHeader: e2ee.e2eeHeader } : {}),
+      }),
     }),
 
   deleteMessage: (messageId: string) =>
-    apiRequest<MessageItem>(`/messages/${messageId}`, {
+    apiRequest<MessageItem | undefined>(`/messages/${messageId}`, {
       method: 'DELETE',
     }),
 
@@ -392,6 +541,12 @@ export const api = {
 
   replenishPreKeys: (deviceId: string, dto: ReplenishPreKeysDto) =>
     apiRequest<{ added: number }>(`/encryption/devices/${deviceId}/prekeys`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+
+  rotateSignedPreKey: (deviceId: string, dto: RotateSignedPreKeyDto) =>
+    apiRequest<DeviceSummary>(`/encryption/devices/${deviceId}/signed-prekey`, {
       method: 'POST',
       body: JSON.stringify(dto),
     }),
@@ -506,6 +661,12 @@ export const api = {
     apiRequest<CommunityMemberItem>(`/communities/${communityId}/members/${userId}/role`, {
       method: 'PATCH',
       body: JSON.stringify(dto),
+    }),
+
+  transferCommunityOwnership: (communityId: string, targetUserId: string) =>
+    apiRequest<{ success: true }>(`/communities/${communityId}/transfer-ownership`, {
+      method: 'POST',
+      body: JSON.stringify({ targetUserId }),
     }),
 
   kickMember: (communityId: string, userId: string) =>

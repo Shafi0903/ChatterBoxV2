@@ -9,9 +9,16 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { z } from 'zod';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { FollowsService } from './follows.service';
+
+const followListQuerySchema = z.object({
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -40,21 +47,19 @@ export class FollowsController {
   async getFollowers(
     @CurrentUser('userId') callerId: string,
     @Param('userId') userId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(followListQuerySchema))
+    query: z.infer<typeof followListQuerySchema>,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    return this.followsService.getFollowers(callerId, userId, cursor, parsedLimit);
+    return this.followsService.getFollowers(callerId, userId, query.cursor, query.limit ?? 20);
   }
 
   @Get(':userId/following')
   async getFollowing(
     @CurrentUser('userId') callerId: string,
     @Param('userId') userId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(followListQuerySchema))
+    query: z.infer<typeof followListQuerySchema>,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    return this.followsService.getFollowing(callerId, userId, cursor, parsedLimit);
+    return this.followsService.getFollowing(callerId, userId, query.cursor, query.limit ?? 20);
   }
 }

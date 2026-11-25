@@ -6,7 +6,7 @@ import {
   RegisterDto,
   LoginDto,
 } from '@chatterbox/shared';
-import { api, setAccessToken } from '../lib/api';
+import { api, setAccessToken, hasSessionHint, setSessionHint } from '../lib/api';
 import { disconnectSocket } from '../lib/socket';
 import { useThemeStore } from './theme.store';
 import { useChatStore } from './chat.store';
@@ -22,7 +22,7 @@ interface AuthState {
   isLoading: boolean;
   isInitialized: boolean;
 
-  initializeAuth: () => Promise<void>;
+  initializeAuth: (options?: { skipRefreshIfNoHint?: boolean }) => Promise<void>;
   register: (dto: RegisterDto) => Promise<void>;
   login: (dto: LoginDto) => Promise<void>;
   logout: () => Promise<void>;
@@ -40,9 +40,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isLoading: false,
   isInitialized: false,
 
-  initializeAuth: async () => {
+  initializeAuth: async (options) => {
     // Return early if already initialized or actively initializing
     if (get().isInitialized || isInitializing) {
+      return;
+    }
+
+    if (options?.skipRefreshIfNoHint && !hasSessionHint()) {
+      set({
+        user: null,
+        profile: null,
+        settings: null,
+        isLoading: false,
+        isInitialized: true,
+      });
       return;
     }
 
@@ -96,6 +107,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const response = await api.register(dto);
       setAccessToken(response.accessToken);
+      setSessionHint(true);
 
       // Fetch profile & default settings
       const me = await api.getMe();
@@ -121,6 +133,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const response = await api.login(dto);
       setAccessToken(response.accessToken);
+      setSessionHint(true);
 
       const me = await api.getMe();
       set({
@@ -154,6 +167,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       useSocialStore.getState().resetSocialState();
       useCallStore.getState().resetCallState();
       setAccessToken(null);
+      setSessionHint(false);
       set({
         user: null,
         profile: null,

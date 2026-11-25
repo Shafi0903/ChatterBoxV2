@@ -15,7 +15,7 @@ import {
   AlertCircle,
   ShieldCheck,
 } from 'lucide-react';
-import { api } from '../../lib/api';
+import { api, uploadMediaWithFallback } from '../../lib/api';
 import { cn } from '../../lib/utils';
 import {
   ALLOWED_MIME_TYPES,
@@ -56,6 +56,11 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({ conversationId
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const stagedFilesRef = useRef<StagedAttachment[]>([]);
+
+  useEffect(() => {
+    stagedFilesRef.current = stagedFiles;
+  }, [stagedFiles]);
 
   const activeConv = conversations.find((c) => c.id === conversationId);
   const isEncrypted = Boolean(activeConv?.isEncrypted);
@@ -78,10 +83,10 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({ conversationId
     }
   }, [replyingTo]);
 
-  // Adjustment #2: Revoke all object URLs on unmount
+  // Revoke all object URLs on unmount
   useEffect(() => {
     return () => {
-      stagedFiles.forEach((f) => {
+      stagedFilesRef.current.forEach((f) => {
         if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
       });
     };
@@ -131,34 +136,19 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({ conversationId
         sizeBytes: file.size,
       });
 
-      // 2. Adjustment #2: Clean XHR PUT without withCredentials or auth headers
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('PUT', presignRes.uploadUrl, true);
-        xhr.withCredentials = false;
-        xhr.setRequestHeader('Content-Type', staged.mimeType);
-
-        xhr.upload.onprogress = (evt) => {
-          if (evt.lengthComputable) {
-            const percent = Math.round((evt.loaded / evt.total) * 100);
-            setStagedFiles((prev) =>
-              prev.map((item) =>
-                item.id === tempId ? { ...item, progress: percent } : item
-              )
-            );
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve();
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
-          }
-        };
-
-        xhr.onerror = () => reject(new Error('Network error uploading file to media storage'));
-        xhr.send(file);
+      // 2. Upload directly to S3 with automatic authenticated API relay fallback
+      await uploadMediaWithFallback({
+        attachmentId: presignRes.attachmentId,
+        uploadUrl: presignRes.uploadUrl,
+        file,
+        contentType: staged.mimeType,
+        onProgress: (percent) => {
+          setStagedFiles((prev) =>
+            prev.map((item) =>
+              item.id === tempId ? { ...item, progress: percent } : item
+            )
+          );
+        },
       });
 
       // 3. Confirm upload
@@ -255,11 +245,18 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({ conversationId
       status: 'READY' as const,
     }));
 
-    setText('');
-    setStagedFiles([]);
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
-
-    await sendMessage(conversationId, trimmed, replyId, attachmentIds, stagedForStore);
+    setComposerError(null);
+    try {
+      await sendMessage(conversationId, trimmed, replyId, attachmentIds, stagedForStore);
+      readyAttachments.forEach((f) => {
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+      });
+      setText('');
+      setStagedFiles((prev) => prev.filter((f) => f.status !== 'READY'));
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    } catch (err: any) {
+      setComposerError(err?.message || 'Failed to send message. Your text and attachments are preserved.');
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -271,7 +268,12 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({ conversationId
 
   const handleVoiceNoteSent = async (attachmentId: string, durationSec: number, staged: any) => {
     setIsRecordingVoice(false);
-    await sendMessage(conversationId, '', undefined, [attachmentId], [staged]);
+    setComposerError(null);
+    try {
+      await sendMessage(conversationId, '', undefined, [attachmentId], [staged]);
+    } catch (err: any) {
+      setComposerError(err?.message || 'Failed to send voice note.');
+    }
   };
 
   const formatFileSize = (bytes: number) => {

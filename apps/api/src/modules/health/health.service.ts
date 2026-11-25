@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import { HealthCheckResponse } from '@chatterbox/shared';
+import { getS3Config } from '../../config/s3-config.util';
 
 @Injectable()
 export class HealthService {
@@ -15,17 +16,15 @@ export class HealthService {
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
   ) {
-    const endpoint = process.env.S3_ENDPOINT || 'http://localhost:9000';
-    this.bucket = process.env.S3_BUCKET || 'chatterbox-media';
-    const accessKeyId = process.env.S3_ACCESS_KEY || 'minioadmin';
-    const secretAccessKey = process.env.S3_SECRET_KEY || 'minioadmin';
+    const config = getS3Config();
+    this.bucket = config.bucket;
 
     this.s3Client = new S3Client({
-      endpoint,
+      endpoint: config.endpoint,
       region: 'us-east-1',
       credentials: {
-        accessKeyId,
-        secretAccessKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
       },
       forcePathStyle: true,
     });

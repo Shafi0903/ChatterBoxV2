@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 export interface UserSearchResult {
   id: string;
@@ -11,7 +12,11 @@ export interface UserSearchResult {
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => RealtimeService))
+    private realtimeService: RealtimeService,
+  ) {}
 
   /**
    * Searches for active users by username or display name, excluding requesting user
@@ -66,5 +71,33 @@ export class UsersService {
       avatarUrl: u.profile?.avatarUrl || null,
       bio: u.profile?.bio || null,
     }));
+  }
+
+  /**
+   * Deactivates and soft deletes current user account, revoking sessions, devices, and sockets
+   */
+  async deleteAccount(userId: string): Promise<{ success: true }> {
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          isActive: false,
+          deletedAt: now,
+        },
+      }),
+      this.prisma.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+      this.prisma.device.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+    ]);
+
+    this.realtimeService.disconnectUserSockets(userId);
+
+    return { success: true };
   }
 }

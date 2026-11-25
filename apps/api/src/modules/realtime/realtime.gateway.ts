@@ -9,8 +9,10 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, Inject, forwardRef } from '@nestjs/common';
+import { Logger, Inject, forwardRef, HttpException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { getJwtAccessSecret } from '../../config/jwt-secret.util';
+import { corsOriginCallback } from '../../config/cors.util';
 import {
   SocketEvents,
   ConversationJoinPayload,
@@ -27,6 +29,15 @@ import {
   CallOfferPayload,
   CallAnswerPayload,
   CallIceCandidatePayload,
+  conversationJoinSchema,
+  messageSendSchema,
+  messageDeliveredSchema,
+  messageReadSchema,
+  typingSchema,
+  channelJoinSchema,
+  channelLeaveSchema,
+  channelMessageSendSchema,
+  channelTypingSchema,
   callInitiateSchema,
   callActionSchema,
   callOfferSchema,
@@ -42,7 +53,7 @@ import { CallsService } from '../calls/calls.service';
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: corsOriginCallback,
     credentials: true,
   },
 })
@@ -50,9 +61,34 @@ export class RealtimeGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
 {
   private readonly logger = new Logger(RealtimeGateway.name);
+  private eventLimits = new Map<string, { count: number; resetAt: number }>();
 
   @WebSocketServer()
   server: Server;
+
+  /**
+   * Per-socket rate limiter: max events per window (default 60 events / 10s)
+   */
+  private checkSocketRateLimit(clientId: string, maxEvents = 60, windowMs = 10000): boolean {
+    const now = Date.now();
+    const entry = this.eventLimits.get(clientId);
+    if (!entry || now > entry.resetAt) {
+      this.eventLimits.set(clientId, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+    if (entry.count >= maxEvents) {
+      return false;
+    }
+    entry.count++;
+    return true;
+  }
+
+  private sanitizeWsError(err: unknown, fallback: string): string {
+    if (err instanceof HttpException) {
+      return err.message;
+    }
+    return fallback;
+  }
 
   constructor(
     private jwtService: JwtService,
@@ -84,9 +120,7 @@ export class RealtimeGateway
         }
 
         const payload = this.jwtService.verify(token, {
-          secret:
-            process.env.JWT_ACCESS_SECRET ||
-            'dev-access-secret-min-32-chars-long',
+          secret: getJwtAccessSecret(),
         });
 
         const user = await this.prisma.user.findUnique({
@@ -94,6 +128,7 @@ export class RealtimeGateway
           include: {
             profile: { select: { displayName: true } },
             memberships: { select: { conversationId: true } },
+            communityMemberships: { select: { communityId: true } },
           },
         });
 
@@ -110,6 +145,7 @@ export class RealtimeGateway
           displayName: user.profile?.displayName || user.username,
         };
         socket.data.memberships = user.memberships;
+        socket.data.communityMemberships = user.communityMemberships;
 
         next();
       } catch (err: any) {
@@ -123,43 +159,55 @@ export class RealtimeGateway
   }
 
   async handleConnection(client: Socket) {
-    const user = client.data?.user;
-    if (!user) {
-      client.disconnect(true);
-      return;
-    }
-
-    // Auto-join personal room
-    client.join(`user:${user.userId}`);
-
-    // Auto-join all conversation rooms caller belongs to in DB
-    client.data.memberships?.forEach((m: any) => {
-      client.join(`conversation:${m.conversationId}`);
-    });
-
-    // Presence management
-    const becameOnline = await this.presenceService.addSocket(user.userId, client.id);
-    if (becameOnline) {
-      const canBroadcast = await this.presenceService.canBroadcastOnline(user.userId);
-      if (canBroadcast) {
-        await this.broadcastPresenceToContacts(user.userId, 'ONLINE');
+    try {
+      const user = client.data?.user;
+      if (!user) {
+        client.disconnect(true);
+        return;
       }
+
+      // Auto-join personal room
+      client.join(`user:${user.userId}`);
+
+      // Auto-join all conversation & community rooms caller belongs to in DB
+      client.data.memberships?.forEach((m: any) => {
+        client.join(`conversation:${m.conversationId}`);
+      });
+      client.data.communityMemberships?.forEach((m: any) => {
+        client.join(`community:${m.communityId}`);
+      });
+
+      // Presence management
+      const becameOnline = await this.presenceService.addSocket(user.userId, client.id);
+      if (becameOnline) {
+        const canBroadcast = await this.presenceService.canBroadcastOnline(user.userId);
+        if (canBroadcast) {
+          await this.broadcastPresenceToContacts(user.userId, 'ONLINE');
+        }
+      }
+    } catch (err: any) {
+      this.logger.error(`handleConnection failed for socket ${client.id}: ${err?.message || err}`);
+      client.disconnect(true);
     }
   }
 
   async handleDisconnect(client: Socket) {
-    const user = client.data?.user;
-    if (!user) return;
+    try {
+      this.eventLimits.delete(client.id);
+      const user = client.data?.user;
+      if (!user) return;
 
-    await this.presenceService.removeSocket(
-      user.userId,
-      client.id,
-      async (userId) => {
-        await this.broadcastPresenceToContacts(userId, 'OFFLINE');
-        // Handle call termination if user disconnects all active sockets
-        await this.callsService.handleUserDisconnect(userId);
-      },
-    );
+      await this.presenceService.removeSocket(
+        user.userId,
+        client.id,
+        async (userId) => {
+          await this.broadcastPresenceToContacts(userId, 'OFFLINE');
+          await this.callsService.handleUserDisconnect(userId);
+        },
+      );
+    } catch (err: any) {
+      this.logger.error(`handleDisconnect failed for socket ${client.id}: ${err?.message || err}`);
+    }
   }
 
   /**
@@ -192,15 +240,24 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: ConversationJoinPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
-    if (!userId || !payload?.conversationId) {
-      return { ok: false, code: 'FORBIDDEN' };
+    if (!userId) {
+      return { ok: false, code: 'FORBIDDEN', error: 'Authentication required' };
+    }
+
+    const parsed = conversationJoinSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Validation failed', code: 'INVALID_PAYLOAD' };
     }
 
     const member = await this.prisma.conversationMember.findUnique({
       where: {
         conversationId_userId: {
-          conversationId: payload.conversationId,
+          conversationId: parsed.data.conversationId,
           userId,
         },
       },
@@ -210,7 +267,7 @@ export class RealtimeGateway
       return { ok: false, code: 'FORBIDDEN', message: 'Not a member of this conversation.' };
     }
 
-    client.join(`conversation:${payload.conversationId}`);
+    client.join(`conversation:${parsed.data.conversationId}`);
     return { ok: true };
   }
 
@@ -219,31 +276,46 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: MessageSendPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id)) {
+      return { ok: false, message: 'Rate limit exceeded' };
+    }
+
     const userId = client.data?.user?.userId;
-    if (!userId || !payload?.conversationId || !payload?.clientMessageId || !payload?.content) {
-      return { ok: false, message: 'Invalid payload' };
+    if (!userId) {
+      return { ok: false, message: 'Authentication required' };
+    }
+
+    const parsed = messageSendSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, message: 'Invalid payload', details: parsed.error.issues };
+    }
+
+    const data = parsed.data;
+    if (!data.content && (!data.attachmentIds || data.attachmentIds.length === 0)) {
+      return { ok: false, message: 'Message content cannot be empty unless attachments are provided' };
     }
 
     try {
       // Single send path with idempotency
       const message = await this.messagesService.sendMessage(
         userId,
-        payload.conversationId,
+        data.conversationId,
         {
-          clientMessageId: payload.clientMessageId,
-          content: payload.content,
-          replyToId: payload.replyToId,
-          attachmentIds: payload.attachmentIds,
-          type: (payload.type as any) || undefined,
-          isEncrypted: payload.isEncrypted,
-          senderDeviceId: payload.senderDeviceId,
-          e2eeHeader: payload.e2eeHeader,
+          clientMessageId: data.clientMessageId,
+          content: data.content,
+          replyToId: data.replyToId,
+          attachmentIds: data.attachmentIds,
+          type: (data.type as any) || undefined,
+          isEncrypted: data.isEncrypted,
+          senderDeviceId: data.senderDeviceId,
+          e2eeHeader: data.e2eeHeader,
         },
       );
 
       return { ok: true, message };
     } catch (err: any) {
-      return { ok: false, message: err.message };
+      this.logger.error(`Message send failed: ${err.message}`);
+      return { ok: false, message: this.sanitizeWsError(err, 'Failed to send message') };
     }
   }
 
@@ -252,48 +324,66 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: MessageDeliveredPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id)) return;
+
     const userId = client.data?.user?.userId;
-    if (!userId || !payload?.conversationId || !payload?.messageId) return;
+    if (!userId) return;
 
-    const member = await this.prisma.conversationMember.findUnique({
-      where: {
-        conversationId_userId: {
-          conversationId: payload.conversationId,
-          userId,
+    const parsed = messageDeliveredSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    try {
+      const member = await this.prisma.conversationMember.findUnique({
+        where: {
+          conversationId_userId: {
+            conversationId: parsed.data.conversationId,
+            userId,
+          },
         },
-      },
-    });
+      });
 
-    if (!member) return;
+      if (!member) return;
 
-    const now = new Date();
-    await this.prisma.messageReceipt.upsert({
-      where: {
-        messageId_memberId: {
-          messageId: payload.messageId,
+      const message = await this.prisma.message.findFirst({
+        where: {
+          id: parsed.data.messageId,
+          conversationId: parsed.data.conversationId,
+        },
+        select: { id: true },
+      });
+
+      if (!message) return;
+
+      const now = new Date();
+      await this.prisma.messageReceipt.upsert({
+        where: {
+          messageId_memberId: {
+            messageId: parsed.data.messageId,
+            memberId: member.id,
+          },
+        },
+        update: { deliveredAt: now },
+        create: {
+          messageId: parsed.data.messageId,
           memberId: member.id,
+          deliveredAt: now,
         },
-      },
-      update: { deliveredAt: now },
-      create: {
-        messageId: payload.messageId,
-        memberId: member.id,
-        deliveredAt: now,
-      },
-    });
+      });
 
-    // Adjustment #4: Always expose userId (not internal memberId) in message:status
-    this.realtimeService.emitToConversation(
-      payload.conversationId,
-      SocketEvents.MESSAGE_STATUS,
-      {
-        conversationId: payload.conversationId,
-        messageId: payload.messageId,
-        userId,
-        status: 'DELIVERED',
-        timestamp: now.toISOString(),
-      },
-    );
+      this.realtimeService.emitToConversation(
+        parsed.data.conversationId,
+        SocketEvents.MESSAGE_STATUS,
+        {
+          conversationId: parsed.data.conversationId,
+          messageId: parsed.data.messageId,
+          userId,
+          status: 'DELIVERED',
+          timestamp: now.toISOString(),
+        },
+      );
+    } catch (err: any) {
+      this.logger.error(`handleMessageDelivered failed: ${err?.message || err}`);
+    }
   }
 
   @SubscribeMessage(SocketEvents.MESSAGE_READ)
@@ -301,69 +391,115 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: MessageReadPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id)) return;
+
     const userId = client.data?.user?.userId;
-    if (!userId || !payload?.conversationId || !payload?.lastReadMessageId) return;
+    if (!userId) return;
 
-    const member = await this.prisma.conversationMember.findUnique({
-      where: {
-        conversationId_userId: {
-          conversationId: payload.conversationId,
-          userId,
+    const parsed = messageReadSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    try {
+      const member = await this.prisma.conversationMember.findUnique({
+        where: {
+          conversationId_userId: {
+            conversationId: parsed.data.conversationId,
+            userId,
+          },
         },
-      },
-    });
+      });
 
-    if (!member) return;
+      if (!member) return;
 
-    const now = new Date();
-    await this.prisma.conversationMember.update({
-      where: { id: member.id },
-      data: {
-        lastReadMessageId: payload.lastReadMessageId,
-        lastReadAt: now,
-      },
-    });
-
-    await this.prisma.messageReceipt.upsert({
-      where: {
-        messageId_memberId: {
-          messageId: payload.lastReadMessageId,
-          memberId: member.id,
+      const message = await this.prisma.message.findFirst({
+        where: {
+          id: parsed.data.lastReadMessageId,
+          conversationId: parsed.data.conversationId,
         },
-      },
-      update: { readAt: now },
-      create: {
-        messageId: payload.lastReadMessageId,
-        memberId: member.id,
-        readAt: now,
-      },
-    });
+        select: { id: true },
+      });
 
-    this.realtimeService.emitToConversation(
-      payload.conversationId,
-      SocketEvents.MESSAGE_STATUS,
-      {
-        conversationId: payload.conversationId,
-        messageId: payload.lastReadMessageId,
-        userId,
-        status: 'READ',
-        timestamp: now.toISOString(),
-      },
-    );
+      if (!message) {
+        return { ok: false, error: 'Message not found in conversation' };
+      }
 
-    return { ok: true };
+      const now = new Date();
+      await this.prisma.conversationMember.update({
+        where: { id: member.id },
+        data: {
+          lastReadMessageId: parsed.data.lastReadMessageId,
+          lastReadAt: now,
+        },
+      });
+
+      const settings = await this.prisma.userSettings.findUnique({
+        where: { userId },
+        select: { showReadReceipts: true },
+      });
+      const showReceipts = settings?.showReadReceipts ?? true;
+
+      if (showReceipts) {
+        await this.prisma.messageReceipt.upsert({
+          where: {
+            messageId_memberId: {
+              messageId: parsed.data.lastReadMessageId,
+              memberId: member.id,
+            },
+          },
+          update: { readAt: now },
+          create: {
+            messageId: parsed.data.lastReadMessageId,
+            memberId: member.id,
+            readAt: now,
+          },
+        });
+
+        this.realtimeService.emitToConversation(
+          parsed.data.conversationId,
+          SocketEvents.MESSAGE_STATUS,
+          {
+            conversationId: parsed.data.conversationId,
+            messageId: parsed.data.lastReadMessageId,
+            userId,
+            status: 'READ',
+            timestamp: now.toISOString(),
+          },
+        );
+      }
+
+      return { ok: true };
+    } catch (err: any) {
+      this.logger.error(`handleMessageRead failed: ${err?.message || err}`);
+      return { ok: false, error: 'Failed to mark message as read' };
+    }
   }
 
   @SubscribeMessage(SocketEvents.TYPING_START)
-  handleTypingStart(
+  async handleTypingStart(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: TypingPayload,
   ) {
-    const user = client.data?.user;
-    if (!user || !payload?.conversationId) return;
+    if (!this.checkSocketRateLimit(client.id, 30, 10000)) return;
 
-    client.to(`conversation:${payload.conversationId}`).emit(SocketEvents.TYPING_UPDATE, {
-      conversationId: payload.conversationId,
+    const user = client.data?.user;
+    if (!user) return;
+
+    const parsed = typingSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    // Verify LIVE conversation membership in DB (never trust stale handshake cache)
+    const dbMember = await this.prisma.conversationMember.findUnique({
+      where: {
+        conversationId_userId: {
+          conversationId: parsed.data.conversationId,
+          userId: user.userId,
+        },
+      },
+    });
+    if (!dbMember) return;
+
+    client.to(`conversation:${parsed.data.conversationId}`).emit(SocketEvents.TYPING_UPDATE, {
+      conversationId: parsed.data.conversationId,
       userId: user.userId,
       displayName: user.displayName,
       isTyping: true,
@@ -371,15 +507,31 @@ export class RealtimeGateway
   }
 
   @SubscribeMessage(SocketEvents.TYPING_STOP)
-  handleTypingStop(
+  async handleTypingStop(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: TypingPayload,
   ) {
-    const user = client.data?.user;
-    if (!user || !payload?.conversationId) return;
+    if (!this.checkSocketRateLimit(client.id, 30, 10000)) return;
 
-    client.to(`conversation:${payload.conversationId}`).emit(SocketEvents.TYPING_UPDATE, {
-      conversationId: payload.conversationId,
+    const user = client.data?.user;
+    if (!user) return;
+
+    const parsed = typingSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    // Verify LIVE conversation membership in DB (never trust stale handshake cache)
+    const dbMember = await this.prisma.conversationMember.findUnique({
+      where: {
+        conversationId_userId: {
+          conversationId: parsed.data.conversationId,
+          userId: user.userId,
+        },
+      },
+    });
+    if (!dbMember) return;
+
+    client.to(`conversation:${parsed.data.conversationId}`).emit(SocketEvents.TYPING_UPDATE, {
+      conversationId: parsed.data.conversationId,
       userId: user.userId,
       displayName: user.displayName,
       isTyping: false,
@@ -395,13 +547,22 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: ChannelJoinPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
-    if (!userId || !payload?.channelId) {
+    if (!userId) {
+      return { ok: false, error: 'Authentication required' };
+    }
+
+    const parsed = channelJoinSchema.safeParse(payload);
+    if (!parsed.success) {
       return { ok: false, error: 'Invalid payload' };
     }
 
     const channel = await this.prisma.channel.findUnique({
-      where: { id: payload.channelId },
+      where: { id: parsed.data.channelId },
       select: { communityId: true },
     });
 
@@ -423,8 +584,8 @@ export class RealtimeGateway
       return { ok: false, error: 'FORBIDDEN: Must be a community member to join channel room' };
     }
 
-    client.join(`channel:${payload.channelId}`);
-    return { ok: true, channelId: payload.channelId };
+    client.join(`channel:${parsed.data.channelId}`);
+    return { ok: true, channelId: parsed.data.channelId };
   }
 
   @SubscribeMessage(SocketEvents.CHANNEL_LEAVE)
@@ -432,8 +593,9 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: ChannelLeavePayload,
   ) {
-    if (payload?.channelId) {
-      client.leave(`channel:${payload.channelId}`);
+    const parsed = channelLeaveSchema.safeParse(payload);
+    if (parsed.success && parsed.data.channelId) {
+      client.leave(`channel:${parsed.data.channelId}`);
     }
     return { ok: true };
   }
@@ -443,36 +605,67 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: ChannelMessageSendPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
     }
 
+    const parsed = channelMessageSendSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false, error: 'Invalid payload' };
+    }
+
     try {
-      const message = await this.channelsService.sendMessage(userId, payload.channelId, {
-        clientMessageId: payload.clientMessageId,
-        content: payload.content,
-        replyToId: payload.replyToId,
-        attachmentIds: payload.attachmentIds || [],
+      const message = await this.channelsService.sendMessage(userId, parsed.data.channelId, {
+        clientMessageId: parsed.data.clientMessageId,
+        content: parsed.data.content,
+        replyToId: parsed.data.replyToId,
+        attachmentIds: parsed.data.attachmentIds || [],
       });
 
       return { ok: true, message };
     } catch (err: any) {
       this.logger.error(`Channel message send failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Failed to send channel message') };
     }
   }
 
   @SubscribeMessage(SocketEvents.CHANNEL_TYPING_START)
-  handleChannelTypingStart(
+  async handleChannelTypingStart(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: ChannelTypingPayload,
   ) {
-    const user = client.data?.user;
-    if (!user || !payload?.channelId) return;
+    if (!this.checkSocketRateLimit(client.id, 30, 10000)) return;
 
-    client.to(`channel:${payload.channelId}`).emit(SocketEvents.CHANNEL_TYPING_UPDATE, {
-      channelId: payload.channelId,
+    const user = client.data?.user;
+    if (!user) return;
+
+    const parsed = channelTypingSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    // Verify channel community membership
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: parsed.data.channelId },
+      select: { communityId: true },
+    });
+    if (!channel) return;
+
+    const member = await this.prisma.communityMember.findUnique({
+      where: {
+        communityId_userId: {
+          communityId: channel.communityId,
+          userId: user.userId,
+        },
+      },
+    });
+    if (!member) return;
+
+    client.to(`channel:${parsed.data.channelId}`).emit(SocketEvents.CHANNEL_TYPING_UPDATE, {
+      channelId: parsed.data.channelId,
       userId: user.userId,
       displayName: user.displayName,
       isTyping: true,
@@ -480,15 +673,37 @@ export class RealtimeGateway
   }
 
   @SubscribeMessage(SocketEvents.CHANNEL_TYPING_STOP)
-  handleChannelTypingStop(
+  async handleChannelTypingStop(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: ChannelTypingPayload,
   ) {
-    const user = client.data?.user;
-    if (!user || !payload?.channelId) return;
+    if (!this.checkSocketRateLimit(client.id, 30, 10000)) return;
 
-    client.to(`channel:${payload.channelId}`).emit(SocketEvents.CHANNEL_TYPING_UPDATE, {
-      channelId: payload.channelId,
+    const user = client.data?.user;
+    if (!user) return;
+
+    const parsed = channelTypingSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    // Verify channel community membership
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: parsed.data.channelId },
+      select: { communityId: true },
+    });
+    if (!channel) return;
+
+    const member = await this.prisma.communityMember.findUnique({
+      where: {
+        communityId_userId: {
+          communityId: channel.communityId,
+          userId: user.userId,
+        },
+      },
+    });
+    if (!member) return;
+
+    client.to(`channel:${parsed.data.channelId}`).emit(SocketEvents.CHANNEL_TYPING_UPDATE, {
+      channelId: parsed.data.channelId,
       userId: user.userId,
       displayName: user.displayName,
       isTyping: false,
@@ -504,6 +719,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallInitiatePayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 20, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -528,7 +747,7 @@ export class RealtimeGateway
       return { ok: true, call: res.call };
     } catch (err: any) {
       this.logger.error(`Call initiate failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call initiation failed') };
     }
   }
 
@@ -537,6 +756,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallActionPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 20, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -552,7 +775,7 @@ export class RealtimeGateway
       return { ok: true, call };
     } catch (err: any) {
       this.logger.error(`Call accept failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call accept failed') };
     }
   }
 
@@ -561,6 +784,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallActionPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 20, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -576,7 +803,7 @@ export class RealtimeGateway
       return { ok: true, call };
     } catch (err: any) {
       this.logger.error(`Call reject failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call reject failed') };
     }
   }
 
@@ -585,6 +812,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallActionPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 20, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -600,7 +831,7 @@ export class RealtimeGateway
       return { ok: true, call };
     } catch (err: any) {
       this.logger.error(`Call end failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call end failed') };
     }
   }
 
@@ -609,6 +840,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallOfferPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 50, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -625,7 +860,6 @@ export class RealtimeGateway
         parsed.data.callId,
       );
 
-      // Relay SDP offer strictly to peer's user room
       this.realtimeService.emitToUser(peerId, SocketEvents.CALL_OFFER, {
         callId: parsed.data.callId,
         sdp: parsed.data.sdp,
@@ -634,7 +868,7 @@ export class RealtimeGateway
       return { ok: true };
     } catch (err: any) {
       this.logger.error(`Call offer relay failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call offer failed') };
     }
   }
 
@@ -643,6 +877,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallAnswerPayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 50, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -659,7 +897,6 @@ export class RealtimeGateway
         parsed.data.callId,
       );
 
-      // Relay SDP answer strictly to peer's user room
       this.realtimeService.emitToUser(peerId, SocketEvents.CALL_ANSWER, {
         callId: parsed.data.callId,
         sdp: parsed.data.sdp,
@@ -668,7 +905,7 @@ export class RealtimeGateway
       return { ok: true };
     } catch (err: any) {
       this.logger.error(`Call answer relay failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call answer failed') };
     }
   }
 
@@ -677,6 +914,10 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: CallIceCandidatePayload,
   ) {
+    if (!this.checkSocketRateLimit(client.id, 100, 10000)) {
+      return { ok: false, error: 'RATE_LIMIT_EXCEEDED' };
+    }
+
     const userId = client.data?.user?.userId;
     if (!userId) {
       return { ok: false, error: 'Authentication required' };
@@ -693,7 +934,6 @@ export class RealtimeGateway
         parsed.data.callId,
       );
 
-      // Relay ICE candidate strictly to peer's user room
       this.realtimeService.emitToUser(peerId, SocketEvents.CALL_ICE_CANDIDATE, {
         callId: parsed.data.callId,
         candidate: parsed.data.candidate,
@@ -702,7 +942,7 @@ export class RealtimeGateway
       return { ok: true };
     } catch (err: any) {
       this.logger.error(`Call ICE candidate relay failed: ${err.message}`);
-      return { ok: false, error: err.message };
+      return { ok: false, error: this.sanitizeWsError(err, 'Call ICE candidate failed') };
     }
   }
 }

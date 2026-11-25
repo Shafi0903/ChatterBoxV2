@@ -16,6 +16,7 @@ export interface FollowUserSummary {
   avatarUrl: string | null;
   bio: string | null;
   isFollowing: boolean;
+  followsYou?: boolean;
   followersCount?: number;
   followingCount?: number;
 }

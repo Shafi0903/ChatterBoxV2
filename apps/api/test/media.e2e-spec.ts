@@ -177,7 +177,10 @@ describe('Media Module (REST E2E)', () => {
   describe('Media Upload, Confirmation & Download lifecycle', () => {
     let attachmentId: string;
     let uploadUrl: string;
-    const testContent = Buffer.from('fake-png-bytes-data-chatterbox-test');
+    const testContent = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('png-bytes-data-chatterbox-test'),
+    ]);
 
     it('should complete presign -> upload bytes to S3/RustFS -> confirm', async () => {
       // 1. Presign
@@ -284,6 +287,22 @@ describe('Media Module (REST E2E)', () => {
 
       expect(msgRes.body.error.code).toBe('FORBIDDEN');
       expect(msgRes.body.error.message).toContain('Cannot attach media uploaded by another user');
+    });
+
+    it('should reject unauthenticated or ?token= query parameter access to /download with 401', async () => {
+      // ?token= is strictly disallowed in production JWT strategy
+      await request(app.getHttpServer())
+        .get(`/api/v1/media/${attachmentId}/download?token=${tokenBob}`)
+        .expect(401);
+    });
+
+    it('should reject confirming an already READY media attachment (overwrite guard)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/media/${attachmentId}/confirm`)
+        .set('Authorization', `Bearer ${tokenAlice}`)
+        .expect(400);
+
+      expect(res.body.error.message).toContain('PENDING');
     });
   });
 });

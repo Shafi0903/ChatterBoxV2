@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { safeHttpUrlSchema } from './url.schema';
 
 export const createDmSchema = z.object({
   targetUserId: z.string().min(1, 'Target user ID is required'),
@@ -13,7 +14,7 @@ export type CreateGroupDto = z.infer<typeof createGroupSchema>;
 
 export const updateConversationSchema = z.object({
   name: z.string().min(1).max(50).trim().optional(),
-  avatarUrl: z.string().url().nullable().optional(),
+  avatarUrl: safeHttpUrlSchema('Avatar URL must be a valid http or https URL').nullable().optional(),
 });
 export type UpdateConversationDto = z.infer<typeof updateConversationSchema>;
 

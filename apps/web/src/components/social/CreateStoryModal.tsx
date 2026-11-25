@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { api } from '../../lib/api';
+import { api, uploadMediaWithFallback } from '../../lib/api';
 import { useSocialStore } from '../../stores/social.store';
 import { Button } from '../ui/Button';
 import { X, Image as ImageIcon, Type, Loader2 } from 'lucide-react';
@@ -94,18 +94,12 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({ isOpen, onCl
           sizeBytes: selectedFile.size,
         });
 
-        // 2. Adjustment #4: Clean XHR PUT to RustFS
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', presign.uploadUrl);
-          xhr.withCredentials = false;
-          xhr.setRequestHeader('Content-Type', selectedFile.type);
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) resolve();
-            else reject(new Error('Failed to upload media to storage'));
-          };
-          xhr.onerror = () => reject(new Error('Network error uploading story media'));
-          xhr.send(selectedFile);
+        // 2. Upload directly to S3 with automatic authenticated API relay fallback
+        await uploadMediaWithFallback({
+          attachmentId: presign.attachmentId,
+          uploadUrl: presign.uploadUrl,
+          file: selectedFile,
+          contentType: selectedFile.type,
         });
 
         // 3. Confirm upload
@@ -243,7 +237,7 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({ isOpen, onCl
             <>
               {/* Text Canvas Preview */}
               <div
-                className={`w-full h-52 rounded-2xl p-6 flex items-center justify-center text-center bg-linear-to-br ${selectedGradient} border border-border shadow-inner relative overflow-hidden`}
+                className={`w-full h-52 rounded-2xl p-6 flex items-center justify-center text-center bg-gradient-to-br ${selectedGradient} border border-border shadow-inner relative overflow-hidden`}
               >
                 <textarea
                   value={textContent}
@@ -265,7 +259,7 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({ isOpen, onCl
                       key={idx}
                       type="button"
                       onClick={() => setSelectedGradient(swatch)}
-                      className={`w-8 h-8 rounded-full bg-linear-to-br ${swatch} shrink-0 transition-transform ${
+                      className={`w-8 h-8 rounded-full bg-gradient-to-br ${swatch} shrink-0 transition-transform ${
                         selectedGradient === swatch ? 'scale-110 ring-2 ring-accent ring-offset-2 ring-offset-surface' : 'opacity-80 hover:opacity-100'
                       }`}
                     />

@@ -343,6 +343,20 @@ describe('Search, Security, Rate-Limiting & Health Hardening Module (REST E2E)',
       const contentsAfter = resAfterFollow.body.data.posts.map((p: any) => p.content);
       expect(contentsAfter).toContain('Galactic supernova observed in Sector 79');
       expect(contentsAfter).toContain('Classified supernova coordinates for inner circle');
+
+      // Verify isFollowing is true after Bob follows Alice
+      const resUserAfterFollow = await request(appUrl)
+        .get('/api/v1/search?q=Searcher&type=users')
+        .set('Authorization', `Bearer ${tokenBob}`)
+        .expect(200);
+      expect(resUserAfterFollow.body.data.users[0].isFollowing).toBe(true);
+    });
+
+    it('rejects NaN or invalid limit query with 400 Bad Request', async () => {
+      await request(appUrl)
+        .get('/api/v1/search?q=Searcher&type=users&limit=invalid_nan')
+        .set('Authorization', `Bearer ${tokenBob}`)
+        .expect(400);
     });
 
     it('searches unencrypted messages for participants but STRICTLY BLOCKS E2EE ciphertext', async () => {

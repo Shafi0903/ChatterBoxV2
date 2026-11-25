@@ -44,21 +44,24 @@ export default function SettingsPage() {
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
   const [isLoadingDevices, setIsLoadingDevices] = useState(true);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   const [revokingDeviceId, setRevokingDeviceId] = useState<string | null>(null);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   useEffect(() => {
     if (user?.id) {
       getUserKeys(user.id).then((k) => {
         if (k) setCurrentDeviceId(k.deviceId);
-      });
+      }).catch(() => {});
 
       api
         .getMyDevices()
         .then((res) => {
           setDevices(res);
+          setDevicesError(null);
         })
-        .catch(() => {
-          // ignore
+        .catch((err: any) => {
+          setDevicesError(err?.message || 'Failed to load registered devices.');
         })
         .finally(() => {
           setIsLoadingDevices(false);
@@ -80,6 +83,21 @@ export default function SettingsPage() {
       alert(err.message || 'Failed to revoke device');
     } finally {
       setRevokingDeviceId(null);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    const confirmation = prompt('Are you sure you want to delete your account? Type "DELETE" to permanently delete:');
+    if (confirmation !== 'DELETE') return;
+
+    setIsDeletingAccount(true);
+    try {
+      await api.deleteAccount();
+      await useAuthStore.getState().logout();
+      window.location.href = '/login';
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete account');
+      setIsDeletingAccount(false);
     }
   };
 
@@ -129,8 +147,11 @@ export default function SettingsPage() {
       } else {
         setErrorMessage('Failed to save settings.');
       }
-      // Rollback
+      // Rollback settings and theme
       setCurrentSettings(settings);
+      if (patch.theme && settings?.theme) {
+        setTheme(settings.theme);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -339,7 +360,7 @@ export default function SettingsPage() {
           <p className="text-[11px] text-muted leading-relaxed">
             ChatterBox never transmits or stores your private cryptographic keys on our servers. Your keys are stored locally in this browser's secure IndexedDB storage.
           </p>
-          <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 flex items-start gap-2">
+          <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 flex items-start gap-2">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>
               If you clear your browser data or website cache, you will lose access to past encrypted message history on this device.
@@ -359,6 +380,10 @@ export default function SettingsPage() {
             <div className="space-y-2">
               <Skeleton className="w-full h-14 rounded-xl" />
               <Skeleton className="w-full h-14 rounded-xl" />
+            </div>
+          ) : devicesError ? (
+            <div className="p-3 rounded-xl bg-status-busy/10 border border-status-busy/25 text-xs text-status-busy">
+              {devicesError}
             </div>
           ) : devices.length === 0 ? (
             <div className="text-center py-6 text-xs text-muted border border-dashed border-border rounded-xl">
@@ -428,6 +453,29 @@ export default function SettingsPage() {
               })}
             </div>
           )}
+        </div>
+      </section>
+
+      {/* Danger Zone: Account Deletion */}
+      <section className="bg-surface border border-rose-500/20 rounded-2xl p-6 shadow-sm">
+        <div className="flex items-center gap-3 mb-2 text-rose-400">
+          <Trash2 className="w-5 h-5 shrink-0" />
+          <h2 className="text-base font-bold text-primary">Danger Zone</h2>
+        </div>
+        <p className="text-xs text-muted mb-4">
+          Permanently deactivate your ChatterBox account and revoke all connected devices and sessions.
+        </p>
+
+        <div className="pt-2">
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={isDeletingAccount}
+            onClick={handleDeleteAccount}
+            className="text-xs"
+          >
+            {isDeletingAccount ? 'Deleting...' : 'Delete Account'}
+          </Button>
         </div>
       </section>
     </div>

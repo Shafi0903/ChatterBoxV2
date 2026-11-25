@@ -33,10 +33,19 @@ export const registerDeviceSchema = z.object({
   signingKeyPublic: publicJwkSchema,
   signedPreKeyPublic: publicJwkSchema,
   signedPreKeySignature: base64StringSchema,
+  identityBindingSignature: base64StringSchema.optional(),
   oneTimePreKeys: z.array(oneTimePreKeyItemSchema).min(1).max(200),
 });
 
 export type RegisterDeviceInput = z.infer<typeof registerDeviceSchema>;
+
+export const rotateSignedPreKeySchema = z.object({
+  signedPreKeyPublic: publicJwkSchema,
+  signedPreKeySignature: base64StringSchema,
+  identityBindingSignature: base64StringSchema.optional(),
+});
+
+export type RotateSignedPreKeyInput = z.infer<typeof rotateSignedPreKeySchema>;
 
 export const replenishPreKeysSchema = z.object({
   preKeys: z.array(oneTimePreKeyItemSchema).min(1).max(200),
@@ -55,12 +64,13 @@ export const e2eeHeaderSchema = z.object({
   ephemeralPublicKey: publicJwkSchema,
   iv: base64StringSchema,
   devices: z.record(z.string().min(1), e2eeDeviceEnvelopeSchema),
+  senderSignature: base64StringSchema.optional(),
 });
 
 export type E2eeHeaderInput = z.infer<typeof e2eeHeaderSchema>;
 
 export const enableE2eeSchema = z.object({
-  conversationId: z.string().uuid(),
+  conversationId: z.string().cuid(),
 });
 
 export type EnableE2eeInput = z.infer<typeof enableE2eeSchema>;

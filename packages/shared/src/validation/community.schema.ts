@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { safeHttpUrlSchema } from './url.schema';
 
 export const communityRoleEnum = z.enum(['OWNER', 'ADMIN', 'MODERATOR', 'MEMBER']);
 export const channelTypeEnum = z.enum(['TEXT', 'ANNOUNCEMENT']);
@@ -7,16 +8,16 @@ export const createCommunitySchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters').max(100),
   description: z.string().trim().max(500).optional(),
   isPublic: z.boolean().default(true),
-  iconUrl: z.string().url().optional(),
-  bannerUrl: z.string().url().optional(),
+  iconUrl: safeHttpUrlSchema('Icon URL must be a valid http or https URL').optional(),
+  bannerUrl: safeHttpUrlSchema('Banner URL must be a valid http or https URL').optional(),
 });
 
 export const updateCommunitySchema = z.object({
   name: z.string().trim().min(2).max(100).optional(),
   description: z.string().trim().max(500).optional().nullable(),
   isPublic: z.boolean().optional(),
-  iconUrl: z.string().url().optional().nullable(),
-  bannerUrl: z.string().url().optional().nullable(),
+  iconUrl: safeHttpUrlSchema('Icon URL must be a valid http or https URL').optional().nullable(),
+  bannerUrl: safeHttpUrlSchema('Banner URL must be a valid http or https URL').optional().nullable(),
 });
 
 export const createChannelSchema = z.object({
@@ -52,6 +53,10 @@ export const updateMemberRoleSchema = z.object({
   role: z.enum(['ADMIN', 'MODERATOR', 'MEMBER']),
 });
 
+export const transferOwnershipSchema = z.object({
+  targetUserId: z.string().cuid('Invalid target user ID'),
+});
+
 // Adjustment #1: Allow empty content if attachmentIds is provided and non-empty
 export const sendChannelMessageSchema = z
   .object({
@@ -78,5 +83,6 @@ export type CreateChannelDto = z.infer<typeof createChannelSchema>;
 export type UpdateChannelDto = z.infer<typeof updateChannelSchema>;
 export type CreateInviteDto = z.infer<typeof createInviteSchema>;
 export type UpdateMemberRoleDto = z.infer<typeof updateMemberRoleSchema>;
+export type TransferOwnershipDto = z.infer<typeof transferOwnershipSchema>;
 export type SendChannelMessageDto = z.infer<typeof sendChannelMessageSchema>;
 export type EditChannelMessageDto = z.infer<typeof editChannelMessageSchema>;

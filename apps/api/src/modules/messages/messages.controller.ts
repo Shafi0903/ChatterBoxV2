@@ -16,9 +16,11 @@ import {
   SendMessageDto,
   EditMessageDto,
   ToggleReactionDto,
+  CursorPaginationQuery,
   sendMessageSchema,
   editMessageSchema,
   toggleReactionSchema,
+  cursorPaginationSchema,
 } from '@chatterbox/shared';
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -36,11 +38,9 @@ export class MessagesController {
   @HttpCode(HttpStatus.OK)
   async getMessages(
     @Param('id') conversationId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limitStr?: string,
+    @Query(new ZodValidationPipe(cursorPaginationSchema)) query: CursorPaginationQuery,
   ) {
-    const limit = limitStr ? parseInt(limitStr, 10) : 50;
-    return this.messagesService.getMessages(conversationId, cursor, limit);
+    return this.messagesService.getMessages(conversationId, query.cursor, query.limit ?? 50);
   }
 
   @Post('conversations/:id/messages')

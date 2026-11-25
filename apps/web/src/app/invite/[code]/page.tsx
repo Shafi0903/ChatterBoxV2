@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import NextLink from 'next/link';
 import { api, ApiError } from '../../../lib/api';
@@ -21,12 +21,13 @@ export default function InviteLandingPage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const joinedCodeRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isInitialized) return;
 
     if (!user) {
-      // Adjustment #2: Redirect unauthenticated user with safe relative redirect param
+      // Redirect unauthenticated user with safe relative redirect param
       router.replace(`/login?redirect=${encodeURIComponent(`/invite/${code}`)}`);
       return;
     }
@@ -37,11 +38,17 @@ export default function InviteLandingPage() {
       return;
     }
 
+    // StrictMode guard: prevent duplicate joinByInviteCode calls on double-mount
+    if (joinedCodeRef.current === code) {
+      return;
+    }
+    joinedCodeRef.current = code;
+
     const join = async () => {
       try {
         const community = await api.joinByInviteCode(code);
         await fetchMyCommunities();
-        await selectCommunity(community.id);
+        await selectCommunity(community.id, undefined, true);
         router.replace(`/communities?c=${community.id}`);
       } catch (err: any) {
         setIsLoading(false);
@@ -53,7 +60,7 @@ export default function InviteLandingPage() {
   }, [code, user, isInitialized, router, fetchMyCommunities, selectCommunity]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-background">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-canvas">
       <div className="w-full max-w-md bg-surface border border-border rounded-2xl p-8 shadow-2xl text-center">
         {isLoading ? (
           <div className="py-8 flex flex-col items-center">

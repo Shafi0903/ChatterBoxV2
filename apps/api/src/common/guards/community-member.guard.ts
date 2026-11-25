@@ -18,10 +18,21 @@ export class CommunityMemberGuard implements CanActivate {
       throw new ForbiddenException('Authentication required');
     }
 
-    const communityId =
+    let communityId =
       request.params?.communityId ||
       request.params?.id ||
       request.body?.communityId;
+
+    if (!communityId && request.params?.channelId) {
+      const channel = await this.prisma.channel.findUnique({
+        where: { id: request.params.channelId },
+        select: { communityId: true },
+      });
+      if (!channel) {
+        throw new NotFoundException('Channel not found');
+      }
+      communityId = channel.communityId;
+    }
 
     if (!communityId) {
       return true;

@@ -4,11 +4,16 @@ import {
   NotFoundException,
   ForbiddenException,
   Logger,
+  OnModuleInit,
+  OnModuleDestroy,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import * as path from 'path';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { S3Service } from './s3.service';
+import { verifyMagicBytes } from './magic-bytes.util';
+import { getJwtAccessSecret } from '../../config/jwt-secret.util';
+import { assertCanViewProfileContent } from '../../common/privacy/profile-visibility.util';
 import {
   PresignUploadInput,
   PresignUploadResponse,
@@ -18,17 +23,90 @@ import {
 } from '@chatterbox/shared';
 
 @Injectable()
-export class MediaService {
+export class MediaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MediaService.name);
+  private cleanupTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly s3Service: S3Service,
   ) {}
 
+  onModuleInit() {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+    // Periodically clean up orphaned PENDING uploads older than 24 hours
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupOrphanedUploads(24).catch((err) => {
+        this.logger.error(`Scheduled orphan media cleanup failed: ${err?.message || err}`);
+      });
+    }, 60 * 60 * 1000);
+    this.cleanupTimer.unref();
+  }
+
+  onModuleDestroy() {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
+
+  private getMediaSigningKey(): Buffer {
+    return createHash('sha256')
+      .update(`${getJwtAccessSecret()}:chatterbox-media-token`)
+      .digest();
+  }
+
+  createMediaToken(userId: string, attachmentId: string, ttlSeconds = 120): string {
+    const payload = Buffer.from(
+      JSON.stringify({
+        typ: 'media',
+        sub: userId,
+        att: attachmentId,
+        exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+      }),
+    ).toString('base64url');
+    const sig = createHmac('sha256', this.getMediaSigningKey())
+      .update(payload)
+      .digest('base64url');
+    return `${payload}.${sig}`;
+  }
+
+  verifyMediaToken(token: string, expectedAttachmentId: string): { userId: string } | null {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 2) return null;
+      const [payloadB64, sigB64] = parts;
+      const expectedSig = createHmac('sha256', this.getMediaSigningKey())
+        .update(payloadB64)
+        .digest();
+      const actualSig = Buffer.from(sigB64, 'base64url');
+      if (expectedSig.length !== actualSig.length || !timingSafeEqual(expectedSig, actualSig)) {
+        return null;
+      }
+
+      const decoded = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+      if (
+        !decoded ||
+        decoded.typ !== 'media' ||
+        typeof decoded.sub !== 'string' ||
+        decoded.att !== expectedAttachmentId ||
+        typeof decoded.exp !== 'number' ||
+        decoded.exp < Math.floor(Date.now() / 1000)
+      ) {
+        return null;
+      }
+
+      return { userId: decoded.sub };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Generates a presigned PUT URL and creates a PENDING MediaAttachment record.
-   * Adjustment 2: Sanitizes storageKey to `${userId}/${uuid()}.${safeExt}`.
+   * Sanitizes storageKey to `${userId}/${uuid()}.${safeExt}`.
    */
   async presignUpload(
     userId: string,
@@ -53,7 +131,7 @@ export class MediaService {
     });
 
     const expiresIn = 900; // 15 mins
-    const uploadUrl = await this.s3Service.getPresignedPutUrl(
+    const s3PresignedUrl = await this.s3Service.getPresignedPutUrl(
       storageKey,
       dto.mimeType,
       expiresIn,
@@ -62,14 +140,42 @@ export class MediaService {
     return {
       attachmentId: attachment.id,
       storageKey,
-      uploadUrl,
+      uploadUrl: s3PresignedUrl,
       expiresIn,
     };
   }
 
   /**
-   * Confirms upload by checking actual object existence and ContentLength on S3/RustFS.
-   * Adjustment 2: Real ContentLength enforcement and object deletion if oversized.
+   * Validates ownership & PENDING status BEFORE streaming bytes in relay upload.
+   */
+  async validatePendingUploadOwnership(
+    userId: string,
+    attachmentId: string,
+  ): Promise<{ attachment: any; maxSize: number }> {
+    const attachment = await this.prisma.mediaAttachment.findUnique({
+      where: { id: attachmentId },
+    });
+
+    if (!attachment) {
+      throw new NotFoundException('Media attachment not found');
+    }
+
+    if (attachment.uploaderId !== userId) {
+      throw new ForbiddenException('Cannot upload to an attachment belonging to another user');
+    }
+
+    if (attachment.status !== 'PENDING') {
+      throw new BadRequestException('Cannot overwrite media attachment that is not PENDING');
+    }
+
+    return {
+      attachment,
+      maxSize: getMaxSizeBytes(attachment.mimeType),
+    };
+  }
+
+  /**
+   * Confirms upload by checking actual object existence, ContentLength, and magic bytes on S3/RustFS.
    */
   async confirmUpload(
     userId: string,
@@ -87,8 +193,8 @@ export class MediaService {
       throw new ForbiddenException('Cannot confirm media uploaded by another user');
     }
 
-    if (attachment.status === 'READY') {
-      return this.formatAttachmentItem(attachment);
+    if (attachment.status !== 'PENDING') {
+      throw new BadRequestException('Cannot confirm media attachment that is not PENDING');
     }
 
     try {
@@ -101,7 +207,6 @@ export class MediaService {
       }
 
       if (actualSize > maxSize) {
-        // Delete oversized file from S3
         await this.s3Service.deleteObject(attachment.storageKey);
         await this.prisma.mediaAttachment.update({
           where: { id: attachmentId },
@@ -112,15 +217,41 @@ export class MediaService {
         );
       }
 
-      const updated = await this.prisma.mediaAttachment.update({
-        where: { id: attachmentId },
+      // Inspect leading bytes from S3 to verify magic bytes match declared MIME type
+      const headerBytes = await this.s3Service.getObjectRange(
+        attachment.storageKey,
+        0,
+        Math.min(actualSize - 1, 511),
+      );
+
+      if (!verifyMagicBytes(headerBytes, attachment.mimeType)) {
+        await this.s3Service.deleteObject(attachment.storageKey);
+        await this.prisma.mediaAttachment.update({
+          where: { id: attachmentId },
+          data: { status: 'FAILED' },
+        });
+        throw new BadRequestException(
+          `Uploaded file content does not match declared MIME type ${attachment.mimeType}`,
+        );
+      }
+
+      const updatedCount = await this.prisma.mediaAttachment.updateMany({
+        where: { id: attachmentId, status: 'PENDING' },
         data: {
           status: 'READY',
           sizeBytes: actualSize,
         },
       });
 
-      return this.formatAttachmentItem(updated);
+      if (updatedCount.count === 0) {
+        throw new BadRequestException('Cannot confirm media attachment that is not PENDING');
+      }
+
+      const updated = await this.prisma.mediaAttachment.findUnique({
+        where: { id: attachmentId },
+      });
+
+      return this.formatAttachmentItem(updated!);
     } catch (err: any) {
       if (err instanceof BadRequestException || err instanceof ForbiddenException) {
         throw err;
@@ -134,24 +265,19 @@ export class MediaService {
     }
   }
 
-  /**
-   * Generates a short-lived presigned GET URL after verifying ConversationMember authorization.
-   * Adjustment 2: Rejects attachments whose status !== 'READY'.
-   */
-  async getDownloadUrl(
-    userId: string,
-    attachmentId: string,
-  ): Promise<MediaDownloadUrlResponse> {
+  private async authorizeAttachmentAccess(userId: string, attachmentId: string) {
     const attachment = await this.prisma.mediaAttachment.findUnique({
       where: { id: attachmentId },
       include: {
         message: {
           select: {
             conversationId: true,
+            deletedAt: true,
           },
         },
         channelMessage: {
           select: {
+            deletedAt: true,
             channel: {
               select: {
                 communityId: true,
@@ -185,7 +311,7 @@ export class MediaService {
       throw new BadRequestException('Media attachment is not ready for download');
     }
 
-    // Adjustment #2: Enforce story expiry and post deletion BEFORE uploader shortcut
+    // Enforce expiry & soft-deletion BEFORE uploader shortcut
     if (attachment.story) {
       const isExpired = new Date(attachment.story.expiresAt) <= new Date();
       if (isExpired) {
@@ -193,21 +319,25 @@ export class MediaService {
       }
     }
 
-    if (attachment.post) {
-      if (attachment.post.deletedAt !== null) {
-        throw new NotFoundException('Post containing this media was deleted');
-      }
+    if (attachment.post && attachment.post.deletedAt !== null) {
+      throw new NotFoundException('Post containing this media was deleted');
+    }
+
+    if (attachment.message && attachment.message.deletedAt !== null) {
+      throw new NotFoundException('Message containing this media was deleted');
+    }
+
+    if (attachment.channelMessage && attachment.channelMessage.deletedAt !== null) {
+      throw new NotFoundException('Channel message containing this media was deleted');
     }
 
     // Cross-Phase Media Security
     if (attachment.uploaderId !== userId) {
       if (!attachment.message && !attachment.channelMessage && !attachment.post && !attachment.story) {
-        // Unattached media can only be accessed by its uploader
         throw new ForbiddenException('Access denied to unattached media');
       }
 
       if (attachment.message) {
-        // Check if caller is a member of the conversation where message was posted
         const member = await this.prisma.conversationMember.findUnique({
           where: {
             conversationId_userId: {
@@ -221,7 +351,6 @@ export class MediaService {
           throw new ForbiddenException('You are not a member of the conversation containing this media');
         }
       } else if (attachment.channelMessage) {
-        // Check if caller is a member of the community containing this channel
         const commMember = await this.prisma.communityMember.findUnique({
           where: {
             communityId_userId: {
@@ -235,7 +364,7 @@ export class MediaService {
           throw new ForbiddenException('You are not a member of the community containing this channel media');
         }
       } else if (attachment.post) {
-        // If post visibility is FOLLOWERS, verify caller is following author
+        await assertCanViewProfileContent(this.prisma, attachment.post.authorId, userId);
         if (attachment.post.visibility === 'FOLLOWERS') {
           const follow = await this.prisma.follow.findUnique({
             where: {
@@ -250,7 +379,7 @@ export class MediaService {
           }
         }
       } else if (attachment.story) {
-        // Check if caller is following story author
+        await assertCanViewProfileContent(this.prisma, attachment.story.authorId, userId);
         const follow = await this.prisma.follow.findUnique({
           where: {
             followerId_followingId: {
@@ -265,17 +394,140 @@ export class MediaService {
       }
     }
 
-    const expiresIn = 300; // 5 minutes
-    const downloadUrl = await this.s3Service.getPresignedGetUrl(
-      attachment.storageKey,
-      expiresIn,
-    );
+    return attachment;
+  }
 
+  /**
+   * Generates a short-lived signed download URL and scoped proxy URL after verifying authorization.
+   */
+  async getDownloadUrl(
+    userId: string,
+    attachmentId: string,
+  ): Promise<MediaDownloadUrlResponse> {
+    const attachment = await this.authorizeAttachmentAccess(userId, attachmentId);
+
+    const tokenTtl = 120; // 2 minutes for scoped mediaToken
+    const mediaToken = this.createMediaToken(userId, attachment.id, tokenTtl);
+    const proxyUrl = `/api/v1/media/${attachment.id}/download?mediaToken=${encodeURIComponent(mediaToken)}`;
+
+    // In production without an explicit S3_PUBLIC_ENDPOINT, do not leak internal docker URLs
+    const hasPublicS3 = Boolean(process.env.S3_PUBLIC_ENDPOINT);
+    const isProd = process.env.NODE_ENV === 'production';
+
+    if (hasPublicS3 || !isProd) {
+      const expiresIn = 300;
+      const s3DownloadUrl = await this.s3Service.getPresignedGetUrl(
+        attachment.storageKey,
+        expiresIn,
+      );
+      return {
+        attachmentId: attachment.id,
+        downloadUrl: s3DownloadUrl,
+        proxyUrl,
+        expiresIn,
+      };
+    }
+
+    const publicApiBase = (process.env.API_PUBLIC_URL || '').replace(/\/+$/, '');
     return {
       attachmentId: attachment.id,
-      downloadUrl,
-      expiresIn,
+      downloadUrl: publicApiBase ? `${publicApiBase}${proxyUrl}` : proxyUrl,
+      proxyUrl,
+      expiresIn: tokenTtl,
     };
+  }
+
+  /**
+   * Directly uploads file buffer to S3 and confirms attachment atomically.
+   */
+  async uploadFileBuffer(
+    userId: string,
+    attachmentId: string,
+    buffer: Buffer,
+  ): Promise<MediaAttachmentItem> {
+    const { attachment, maxSize } = await this.validatePendingUploadOwnership(userId, attachmentId);
+
+    if (buffer.length === 0) {
+      throw new BadRequestException('Uploaded file is empty (0 bytes)');
+    }
+
+    if (buffer.length > maxSize) {
+      throw new BadRequestException(`File exceeds maximum allowed size for ${attachment.mimeType}`);
+    }
+
+    if (!verifyMagicBytes(buffer, attachment.mimeType)) {
+      throw new BadRequestException(
+        `Uploaded file content does not match declared MIME type ${attachment.mimeType}`,
+      );
+    }
+
+    // Always store with server-validated attachment.mimeType rather than trusting client header
+    await this.s3Service.uploadBuffer(attachment.storageKey, buffer, attachment.mimeType);
+
+    const updatedCount = await this.prisma.mediaAttachment.updateMany({
+      where: {
+        id: attachmentId,
+        status: 'PENDING',
+      },
+      data: {
+        status: 'READY',
+        sizeBytes: buffer.length,
+      },
+    });
+
+    if (updatedCount.count === 0) {
+      throw new BadRequestException('Media attachment was already processed or modified');
+    }
+
+    const updated = await this.prisma.mediaAttachment.findUnique({
+      where: { id: attachmentId },
+    });
+
+    return this.formatAttachmentItem(updated!);
+  }
+
+  /**
+   * Streams file from S3 for authorized users
+   */
+  async getMediaStream(userId: string, attachmentId: string) {
+    const attachment = await this.authorizeAttachmentAccess(userId, attachmentId);
+    const object = await this.s3Service.getObject(attachment.storageKey);
+    return {
+      stream: object.Body,
+      contentType: attachment.mimeType,
+      contentLength: object.ContentLength || attachment.sizeBytes,
+    };
+  }
+
+  /**
+   * Cleans up orphaned PENDING uploads older than maxAgeHours (default 24h).
+   */
+  async cleanupOrphanedUploads(maxAgeHours = 24): Promise<{ deletedCount: number }> {
+    const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+    const expiredAttachments = await this.prisma.mediaAttachment.findMany({
+      where: {
+        status: 'PENDING',
+        createdAt: { lt: cutoff },
+      },
+      select: { id: true, storageKey: true },
+    });
+
+    let deletedCount = 0;
+    for (const att of expiredAttachments) {
+      try {
+        await this.s3Service.deleteObject(att.storageKey);
+      } catch (err: any) {
+        this.logger.warn(`Could not delete storage object for orphaned media ${att.id}: ${err.message}`);
+      }
+
+      await this.prisma.mediaAttachment.update({
+        where: { id: att.id },
+        data: { status: 'FAILED' },
+      });
+      deletedCount++;
+    }
+
+    return { deletedCount };
   }
 
   formatAttachmentItem(a: any): MediaAttachmentItem {

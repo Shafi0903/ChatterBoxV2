@@ -50,7 +50,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       this.logger.error(exception.message, exception.stack);
-      message = exception.message;
+      // Never expose raw internal error details to clients
     }
 
     const errorPayload: ApiErrorResponse = {

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Square, Trash2, Send, Loader2 } from 'lucide-react';
-import { api } from '../../lib/api';
+import { api, uploadMediaWithFallback } from '../../lib/api';
 import { Button } from '../ui/Button';
 
 interface VoiceRecorderProps {
@@ -131,23 +131,12 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
           durationSec,
         });
 
-        // 2. Adjustment #2: Clean XHR PUT without withCredentials or auth headers
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', presignRes.uploadUrl, true);
-          xhr.withCredentials = false;
-          xhr.setRequestHeader('Content-Type', normalizedMime);
-
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve();
-            } else {
-              reject(new Error(`Failed to upload audio to S3 (status ${xhr.status})`));
-            }
-          };
-
-          xhr.onerror = () => reject(new Error('Network error uploading audio'));
-          xhr.send(audioBlob);
+        // 2. Upload directly to S3 with automatic authenticated API relay fallback
+        await uploadMediaWithFallback({
+          attachmentId: presignRes.attachmentId,
+          uploadUrl: presignRes.uploadUrl,
+          file: audioBlob,
+          contentType: normalizedMime,
         });
 
         // 3. Confirm

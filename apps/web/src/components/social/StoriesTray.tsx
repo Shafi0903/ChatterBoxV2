@@ -17,9 +17,13 @@ export function StoriesTray() {
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [viewerGroupIdx, setViewerGroupIdx] = useState<number | null>(null);
+  const [storiesError, setStoriesError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchStories();
+    setStoriesError(null);
+    fetchStories().catch((err: any) => {
+      setStoriesError(err?.message || 'Failed to load stories.');
+    });
   }, [fetchStories]);
 
   // Find user's own active stories
@@ -28,7 +32,7 @@ export function StoriesTray() {
 
   return (
     <>
-      <div className="w-full bg-zinc-950/80 border border-zinc-800/80 rounded-2xl p-4 mb-6 backdrop-blur-sm">
+      <div className="w-full bg-surface border border-border rounded-2xl p-4 mb-6 shadow-xs">
         <div className="flex items-center gap-4 overflow-x-auto no-scrollbar py-1">
           {/* Create / My Story Slot */}
           <div className="flex flex-col items-center gap-1.5 flex-shrink-0 cursor-pointer group">
@@ -45,11 +49,11 @@ export function StoriesTray() {
                   myGroup && myGroup.stories.length > 0
                     ? myGroup.hasUnviewed
                       ? 'bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 shadow-[0_0_12px_rgba(6,182,212,0.5)]'
-                      : 'bg-zinc-700'
-                    : 'border-2 border-dashed border-zinc-700 hover:border-zinc-500'
+                      : 'bg-elevated'
+                    : 'border-2 border-dashed border-border hover:border-accent'
                 }`}
               >
-                <div className="w-full h-full rounded-full bg-zinc-900 overflow-hidden flex items-center justify-center">
+                <div className="w-full h-full rounded-full bg-elevated overflow-hidden flex items-center justify-center">
                   {profile?.avatarUrl ? (
                     <img
                       src={profile.avatarUrl}
@@ -57,7 +61,7 @@ export function StoriesTray() {
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <span className="text-zinc-300 font-bold text-base">
+                    <span className="text-primary font-bold text-base">
                       {(profile?.displayName || user?.username || 'U').charAt(0).toUpperCase()}
                     </span>
                   )}
@@ -70,24 +74,40 @@ export function StoriesTray() {
                   e.stopPropagation();
                   setCreateModalOpen(true);
                 }}
-                className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-cyan-500 text-zinc-950 flex items-center justify-center shadow-lg hover:bg-cyan-400 hover:scale-110 transition-all border-2 border-zinc-950"
+                className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-accent text-white flex items-center justify-center shadow-md hover:bg-accent-bright hover:scale-110 transition-all border-2 border-surface"
                 title="Create Story"
               >
                 <Plus className="w-3.5 h-3.5 stroke-[3]" />
               </button>
             </div>
-            <span className="text-xs text-zinc-300 font-medium max-w-[64px] truncate text-center">
+            <span className="text-xs text-primary font-medium max-w-[64px] truncate text-center">
               Your Story
             </span>
           </div>
 
           {/* Other User Stories */}
-          {isLoadingStories ? (
+          {storiesError ? (
+            <div className="flex items-center gap-2 text-xs text-status-busy px-2">
+              <span>{storiesError}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setStoriesError(null);
+                  fetchStories().catch((err: any) => {
+                    setStoriesError(err?.message || 'Failed to load stories.');
+                  });
+                }}
+                className="underline font-semibold"
+              >
+                Retry
+              </button>
+            </div>
+          ) : isLoadingStories ? (
             // Skeletons
             [...Array(4)].map((_, i) => (
               <div key={i} className="flex flex-col items-center gap-1.5 flex-shrink-0 animate-pulse">
-                <div className="w-16 h-16 rounded-full bg-zinc-800/80" />
-                <div className="w-12 h-2.5 bg-zinc-800 rounded-full" />
+                <div className="w-16 h-16 rounded-full bg-elevated" />
+                <div className="w-12 h-2.5 bg-elevated rounded-full" />
               </div>
             ))
           ) : (
@@ -104,10 +124,10 @@ export function StoriesTray() {
                     className={`w-16 h-16 rounded-full p-0.5 transition-transform group-hover:scale-105 ${
                       group.hasUnviewed
                         ? 'bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 shadow-[0_0_12px_rgba(6,182,212,0.4)] animate-pulse'
-                        : 'bg-zinc-700 opacity-75'
+                        : 'bg-elevated opacity-75'
                     }`}
                   >
-                    <div className="w-full h-full rounded-full bg-zinc-900 overflow-hidden flex items-center justify-center">
+                    <div className="w-full h-full rounded-full bg-elevated overflow-hidden flex items-center justify-center">
                       {group.author.avatarUrl ? (
                         <img
                           src={group.author.avatarUrl}
@@ -115,13 +135,13 @@ export function StoriesTray() {
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <span className="text-zinc-200 font-bold text-base">
+                        <span className="text-primary font-bold text-base">
                           {(group.author.displayName || group.author.username).charAt(0).toUpperCase()}
                         </span>
                       )}
                     </div>
                   </div>
-                  <span className="text-xs text-zinc-300 font-medium max-w-[68px] truncate text-center">
+                  <span className="text-xs text-primary font-medium max-w-[68px] truncate text-center">
                     {group.author.displayName || group.author.username}
                   </span>
                 </div>

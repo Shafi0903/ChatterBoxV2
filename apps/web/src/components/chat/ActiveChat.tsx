@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { ConversationMemberItem, CallType } from '@chatterbox/shared';
 import { useAuthStore } from '../../stores/auth.store';
 import { useChatStore } from '../../stores/chat.store';
@@ -18,6 +18,7 @@ import {
   Loader2,
   Phone,
   Video,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -35,6 +36,8 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
     activeConversationDetail,
     presenceByUserId,
     typingByConversationId,
+    peerKeyWarnings,
+    dismissPeerKeyWarning,
     isDetailsOpen,
     toggleDetails,
   } = useChatStore();
@@ -44,6 +47,21 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
   const [isSafetyModalOpen, setIsSafetyModalOpen] = useState(false);
   const [isEnablingE2ee, setIsEnablingE2ee] = useState(false);
   const [enableE2eeError, setEnableE2eeError] = useState<string | null>(null);
+  const e2eeErrorTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    setEnableE2eeError(null);
+    return () => {
+      if (e2eeErrorTimerRef.current) {
+        clearTimeout(e2eeErrorTimerRef.current);
+      }
+    };
+  }, [conversationId]);
+
+  // Reactive call store state for header call buttons & errors
+  const callStatus = useCallStore((s) => s.status);
+  const callError = useCallStore((s) => s.callError);
+  const initiateCall = useCallStore((s) => s.initiateCall);
 
   // For DMs, find the other member
   const otherMember = useMemo(() => {
@@ -57,6 +75,9 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
     if (!conversationId) return;
     setIsEnablingE2ee(true);
     setEnableE2eeError(null);
+    if (e2eeErrorTimerRef.current) {
+      clearTimeout(e2eeErrorTimerRef.current);
+    }
     try {
       await api.enableConversationE2ee(conversationId);
       // Update local conversation detail state
@@ -69,8 +90,11 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
         ),
       }));
     } catch (err: any) {
-      setEnableE2eeError(err.message || 'Failed to enable E2EE. Ensure both users have active devices.');
-      setTimeout(() => setEnableE2eeError(null), 4000);
+      const msg =
+        err?.message ||
+        'Cannot enable E2EE: both participants must have registered an active E2EE device.';
+      setEnableE2eeError(msg);
+      e2eeErrorTimerRef.current = setTimeout(() => setEnableE2eeError(null), 10000);
     } finally {
       setIsEnablingE2ee(false);
     }
@@ -184,20 +208,20 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                disabled={useCallStore.getState().status !== 'idle'}
-                onClick={() => useCallStore.getState().initiateCall(conversationId, CallType.AUDIO)}
+                disabled={callStatus !== 'idle'}
+                onClick={() => initiateCall(conversationId, CallType.AUDIO)}
                 className="p-2 rounded-xl text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-                title="Start Voice Call"
+                title={callStatus !== 'idle' ? 'Call in progress' : 'Start Voice Call'}
                 aria-label="Start Voice Call"
               >
                 <Phone className="w-4 h-4" />
               </button>
               <button
                 type="button"
-                disabled={useCallStore.getState().status !== 'idle'}
-                onClick={() => useCallStore.getState().initiateCall(conversationId, CallType.VIDEO)}
+                disabled={callStatus !== 'idle'}
+                onClick={() => initiateCall(conversationId, CallType.VIDEO)}
                 className="p-2 rounded-xl text-secondary hover:text-accent-bright hover:bg-accent/15 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-                title="Start Video Call"
+                title={callStatus !== 'idle' ? 'Call in progress' : 'Start Video Call'}
                 aria-label="Start Video Call"
               >
                 <Video className="w-4 h-4" />
@@ -256,13 +280,60 @@ export const ActiveChat: React.FC<ActiveChatProps> = ({
         </div>
       </div>
 
+      {/* TOFU Peer Key Change Warning */}
+      {conversationId && peerKeyWarnings[conversationId] && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between gap-2 animate-in fade-in">
+          <span>{peerKeyWarnings[conversationId]}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsSafetyModalOpen(true)}
+              className="underline font-semibold"
+            >
+              Verify
+            </button>
+            <button
+              type="button"
+              onClick={() => dismissPeerKeyWarning(conversationId)}
+              className="p-1 hover:opacity-75"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Enable E2EE Error Toast */}
       {enableE2eeError && (
-        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-amber-300 text-xs flex items-center justify-between animate-in fade-in">
-          <span>{enableE2eeError}</span>
+        <div
+          role="alert"
+          className="px-4 py-2.5 bg-amber-500/15 border-b border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-medium flex items-center justify-between gap-2 animate-in fade-in"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>{enableE2eeError}</span>
+          </div>
           <button
+            type="button"
             onClick={() => setEnableE2eeError(null)}
-            className="p-1 hover:text-white"
+            className="p-1 hover:opacity-75 shrink-0"
+            aria-label="Dismiss E2EE error"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Call Error Banner */}
+      {callError && (
+        <div className="px-4 py-2.5 bg-rose-500/15 border-b border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs flex items-center justify-between animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 dark:bg-rose-400" />
+            <span>{callError}</span>
+          </div>
+          <button
+            onClick={() => useCallStore.setState({ callError: null })}
+            className="p-1 text-rose-700 dark:text-rose-300 hover:opacity-75"
           >
             ×
           </button>

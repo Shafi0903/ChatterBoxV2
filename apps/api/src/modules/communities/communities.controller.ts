@@ -18,16 +18,25 @@ import { CommunityMemberGuard } from '../../common/guards/community-member.guard
 import { CommunityRoleGuard } from '../../common/guards/community-role.guard';
 import { RequireCommunityRole } from '../../common/decorators/require-community-role.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { z } from 'zod';
 import {
   createCommunitySchema,
   updateCommunitySchema,
   createInviteSchema,
   updateMemberRoleSchema,
+  transferOwnershipSchema,
   CreateCommunityDto,
   UpdateCommunityDto,
   CreateInviteDto,
   UpdateMemberRoleDto,
+  TransferOwnershipDto,
 } from '@chatterbox/shared';
+
+const discoverQuerySchema = z.object({
+  q: z.string().optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
 
 @Controller('communities')
 @UseGuards(JwtAuthGuard)
@@ -40,12 +49,15 @@ export class CommunitiesController {
   @Get('discover')
   async discoverCommunities(
     @CurrentUser('userId') userId: string,
-    @Query('q') query?: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(discoverQuerySchema))
+    query: z.infer<typeof discoverQuerySchema>,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    return this.communitiesService.discoverCommunities(userId, query, cursor, parsedLimit);
+    return this.communitiesService.discoverCommunities(
+      userId,
+      query.q,
+      query.cursor,
+      query.limit ?? 20,
+    );
   }
 
   @Post('invites/:code/join')
@@ -119,6 +131,18 @@ export class CommunitiesController {
     @Param('id') communityId: string,
   ) {
     return this.communitiesService.leaveCommunity(userId, communityId);
+  }
+
+  @Post(':id/transfer-ownership')
+  @UseGuards(CommunityMemberGuard, CommunityRoleGuard)
+  @RequireCommunityRole('OWNER')
+  @HttpCode(HttpStatus.OK)
+  async transferOwnership(
+    @CurrentUser('userId') callerId: string,
+    @Param('id') communityId: string,
+    @Body(new ZodValidationPipe(transferOwnershipSchema)) dto: TransferOwnershipDto,
+  ) {
+    return this.communitiesService.transferOwnership(callerId, communityId, dto.targetUserId);
   }
 
   @Patch(':id/members/:userId/role')

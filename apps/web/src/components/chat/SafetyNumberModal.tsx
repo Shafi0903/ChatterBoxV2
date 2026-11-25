@@ -96,8 +96,8 @@ export const SafetyNumberModal: React.FC<SafetyNumberModalProps> = ({
             </div>
           ) : error ? (
             <div className="text-center space-y-1.5 py-2">
-              <AlertTriangle className="w-5 h-5 text-amber-400 mx-auto" />
-              <p className="text-xs text-amber-300 max-w-xs">{error}</p>
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mx-auto" />
+              <p className="text-xs text-amber-700 dark:text-amber-300 max-w-xs">{error}</p>
             </div>
           ) : (
             <>

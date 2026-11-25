@@ -51,18 +51,18 @@ export default function PostPermalinkPage() {
       <div className="max-w-2xl mx-auto py-12 px-4">
         <button
           onClick={() => router.back()}
-          className="flex items-center gap-2 text-zinc-400 hover:text-white text-xs mb-6 transition-colors"
+          className="flex items-center gap-2 text-secondary hover:text-primary text-xs mb-6 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back</span>
         </button>
 
-        <div className="bg-zinc-950/80 border border-zinc-800 rounded-2xl p-8 text-center">
-          <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-400 mx-auto mb-3">
+        <div className="bg-surface border border-border rounded-2xl p-8 text-center shadow-xs">
+          <div className="w-12 h-12 rounded-full bg-accent/15 border border-border flex items-center justify-center text-accent-bright mx-auto mb-3">
             <ShieldAlert className="w-6 h-6" />
           </div>
-          <h2 className="text-base font-semibold text-white">Followers-Only Post</h2>
-          <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto">
+          <h2 className="text-base font-semibold text-primary">Followers-Only Post</h2>
+          <p className="text-xs text-secondary mt-1.5 max-w-sm mx-auto">
             This post is private and only visible to confirmed followers of the author.
           </p>
         </div>
@@ -75,15 +75,15 @@ export default function PostPermalinkPage() {
       <div className="max-w-2xl mx-auto py-12 px-4">
         <button
           onClick={() => router.back()}
-          className="flex items-center gap-2 text-zinc-400 hover:text-white text-xs mb-6 transition-colors"
+          className="flex items-center gap-2 text-secondary hover:text-primary text-xs mb-6 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back</span>
         </button>
 
-        <div className="bg-zinc-950/80 border border-zinc-800 rounded-2xl p-8 text-center">
-          <h2 className="text-base font-semibold text-white">Post Not Found</h2>
-          <p className="text-xs text-zinc-400 mt-1">
+        <div className="bg-surface border border-border rounded-2xl p-8 text-center shadow-xs">
+          <h2 className="text-base font-semibold text-primary">Post Not Found</h2>
+          <p className="text-xs text-secondary mt-1.5">
             {errorMessage || 'This post may have been removed or does not exist.'}
           </p>
         </div>
@@ -95,7 +95,7 @@ export default function PostPermalinkPage() {
     <div className="max-w-2xl mx-auto py-4 px-2 pb-16">
       <button
         onClick={() => router.back()}
-        className="flex items-center gap-2 text-zinc-400 hover:text-white text-xs mb-4 transition-colors"
+        className="flex items-center gap-2 text-secondary hover:text-primary text-xs mb-4 transition-colors"
       >
         <ArrowLeft className="w-4 h-4" />
         <span>Back to feed</span>

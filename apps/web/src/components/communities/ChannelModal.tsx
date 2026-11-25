@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChannelItem, ChannelType, createChannelSchema, updateChannelSchema } from '@chatterbox/shared';
 import { api } from '../../lib/api';
 import { useCommunityStore } from '../../stores/community.store';
@@ -30,6 +30,15 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    if (isOpen) {
+      setName(channel?.name || '');
+      setTopic(channel?.topic || '');
+      setType(channel?.type || 'TEXT');
+      setError(null);
+    }
+  }, [isOpen, channel]);
+
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -54,7 +63,7 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
       setIsSubmitting(true);
       try {
         await api.updateChannel(channel.id, parsed.data);
-        await selectCommunity(communityId, channel.id);
+        await selectCommunity(communityId, channel.id, true);
         onClose();
       } catch (err: any) {
         setError(err.message || 'Failed to update channel');
@@ -77,8 +86,7 @@ export const ChannelModal: React.FC<ChannelModalProps> = ({
       setIsSubmitting(true);
       try {
         const created = await api.createChannel(communityId, parsed.data);
-        await selectCommunity(communityId, created.id);
-        await selectChannel(created.id);
+        await selectCommunity(communityId, created.id, true);
         onClose();
       } catch (err: any) {
         setError(err.message || 'Failed to create channel');

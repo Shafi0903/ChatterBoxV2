@@ -188,25 +188,47 @@ export class ConversationsService {
       return this.getConversation(callerId, existing.id);
     }
 
-    // Create new DM inside transaction
-    const newConv = await this.prisma.$transaction(async (tx) => {
-      const conv = await tx.conversation.create({
-        data: {
-          type: 'DM',
-          dmKey,
-          isEncrypted: false,
-        },
-      });
-
-      await tx.conversationMember.createMany({
-        data: [
-          { conversationId: conv.id, userId: callerId, role: 'MEMBER' },
-          { conversationId: conv.id, userId: targetUserId, role: 'MEMBER' },
-        ],
-      });
-
-      return conv;
+    // Enforce UserSettings.allowDirectMessages before creating a new DM
+    const targetSettings = await this.prisma.userSettings.findUnique({
+      where: { userId: targetUserId },
+      select: { allowDirectMessages: true },
     });
+    if (targetSettings && !targetSettings.allowDirectMessages) {
+      throw new ForbiddenException('This user does not accept direct messages');
+    }
+
+    // Create new DM inside transaction (handling concurrent P2002 race on dmKey)
+    let newConv;
+    try {
+      newConv = await this.prisma.$transaction(async (tx) => {
+        const conv = await tx.conversation.create({
+          data: {
+            type: 'DM',
+            dmKey,
+            isEncrypted: false,
+          },
+        });
+
+        await tx.conversationMember.createMany({
+          data: [
+            { conversationId: conv.id, userId: callerId, role: 'MEMBER' },
+            { conversationId: conv.id, userId: targetUserId, role: 'MEMBER' },
+          ],
+        });
+
+        return conv;
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const raceExisting = await this.prisma.conversation.findUnique({
+          where: { dmKey },
+        });
+        if (raceExisting) {
+          return this.getConversation(callerId, raceExisting.id);
+        }
+      }
+      throw err;
+    }
 
     const conversation = await this.getConversation(callerId, newConv.id);
 
@@ -402,6 +424,7 @@ export class ConversationsService {
    * Updates group conversation metadata (OWNER / ADMIN)
    */
   async updateConversation(
+    callerId: string,
     conversationId: string,
     dto: UpdateConversationDto,
   ): Promise<ConversationItem> {
@@ -413,7 +436,7 @@ export class ConversationsService {
       },
     });
 
-    const convItem = await this.getConversation(updated.id, conversationId);
+    const convItem = await this.getConversation(callerId, updated.id);
     this.realtimeService.emitToConversation(
       conversationId,
       SocketEvents.CONVERSATION_UPDATED,
@@ -509,11 +532,51 @@ export class ConversationsService {
     targetUserId: string,
     callerRole: 'OWNER' | 'ADMIN' | 'MEMBER',
   ): Promise<void> {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { id: true, type: true },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    if (conversation.type === 'DM') {
+      throw new BadRequestException('Cannot remove members or leave a 1:1 direct message');
+    }
+
     // If removing someone else, must be OWNER or ADMIN
     if (targetUserId !== callerId && callerRole !== 'OWNER' && callerRole !== 'ADMIN') {
       throw new ForbiddenException({
         code: 'FORBIDDEN',
         message: 'Admin or Owner privileges required.',
+      });
+    }
+
+    const targetMember = await this.prisma.conversationMember.findUnique({
+      where: {
+        conversationId_userId: {
+          conversationId,
+          userId: targetUserId,
+        },
+      },
+    });
+
+    if (!targetMember) {
+      throw new NotFoundException('Target user is not a member of this conversation');
+    }
+
+    if (targetMember.role === 'OWNER' && targetUserId !== callerId) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Cannot remove the conversation owner.',
+      });
+    }
+
+    if (targetUserId !== callerId && callerRole === 'ADMIN' && targetMember.role === 'ADMIN') {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'Admins cannot remove other admins.',
       });
     }
 
@@ -524,9 +587,21 @@ export class ConversationsService {
       },
     });
 
+    // Evict removed user's active sockets from the conversation room immediately
+    this.realtimeService.leaveUserSocketsFromRoom(
+      targetUserId,
+      `conversation:${conversationId}`,
+    );
+
     const convItem = await this.getConversation(callerId, conversationId);
     this.realtimeService.emitToConversation(
       conversationId,
+      SocketEvents.CONVERSATION_UPDATED,
+      { conversation: convItem },
+    );
+    // Notify the removed user so their client removes/updates the conversation
+    this.realtimeService.emitToUser(
+      targetUserId,
       SocketEvents.CONVERSATION_UPDATED,
       { conversation: convItem },
     );
@@ -553,6 +628,19 @@ export class ConversationsService {
 
     if (!member) return;
 
+    // Verify message exists and belongs to this conversation
+    const targetMessage = await this.prisma.message.findFirst({
+      where: {
+        id: dto.lastReadMessageId,
+        conversationId,
+      },
+      select: { id: true },
+    });
+
+    if (!targetMessage) {
+      throw new BadRequestException('Target message does not exist in this conversation');
+    }
+
     await this.prisma.conversationMember.update({
       where: { id: member.id },
       data: {
@@ -561,35 +649,42 @@ export class ConversationsService {
       },
     });
 
-    // Record receipt
-    await this.prisma.messageReceipt.upsert({
-      where: {
-        messageId_memberId: {
+    // Respect UserSettings.showReadReceipts before storing/broadcasting read receipt
+    const settings = await this.prisma.userSettings.findUnique({
+      where: { userId: callerId },
+      select: { showReadReceipts: true },
+    });
+    const showReceipts = settings?.showReadReceipts ?? true;
+
+    if (showReceipts) {
+      await this.prisma.messageReceipt.upsert({
+        where: {
+          messageId_memberId: {
+            messageId: dto.lastReadMessageId,
+            memberId: member.id,
+          },
+        },
+        update: {
+          readAt: now,
+        },
+        create: {
           messageId: dto.lastReadMessageId,
           memberId: member.id,
+          readAt: now,
         },
-      },
-      update: {
-        readAt: now,
-      },
-      create: {
-        messageId: dto.lastReadMessageId,
-        memberId: member.id,
-        readAt: now,
-      },
-    });
+      });
 
-    // Adjustment #4: Always expose userId in message:status events
-    this.realtimeService.emitToConversation(
-      conversationId,
-      SocketEvents.MESSAGE_STATUS,
-      {
+      this.realtimeService.emitToConversation(
         conversationId,
-        messageId: dto.lastReadMessageId,
-        userId: callerId,
-        status: 'READ',
-        timestamp: now.toISOString(),
-      },
-    );
+        SocketEvents.MESSAGE_STATUS,
+        {
+          conversationId,
+          messageId: dto.lastReadMessageId,
+          userId: callerId,
+          status: 'READ',
+          timestamp: now.toISOString(),
+        },
+      );
+    }
   }
 }

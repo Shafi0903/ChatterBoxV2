@@ -11,7 +11,6 @@ import {
   Globe,
   MoreVertical,
 } from 'lucide-react';
-import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSocialStore } from '@/stores/social.store';
 import { AttachmentList } from '@/components/chat/AttachmentList';
@@ -42,35 +41,34 @@ export function PostCard({
   const [isDeleting, setIsDeleting] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const isAuthor = user?.id === post.author.id;
+  const isAuthor = Boolean(
+    user && (user.id === post.author.id || user.id === post.authorId || user.username === post.author.username)
+  );
 
   const handleLike = async () => {
     if (isLiking) return;
     const previousLiked = isLiked;
+    const previousCount = likesCount;
     const delta = previousLiked ? -1 : 1;
 
     // Optimistic UI
     setIsLiked(!previousLiked);
-    setLikesCount((prev) => Math.max(0, prev + delta));
-    toggleLikeInStore(post.id);
+    setLikesCount(Math.max(0, previousCount + delta));
 
     try {
       setIsLiking(true);
-      if (previousLiked) {
-        await api.unlikePost(post.id);
-      } else {
-        await api.likePost(post.id);
-      }
+      const res = await toggleLikeInStore(post.id, previousLiked, previousCount);
+      setIsLiked(res.isLiked);
+      setLikesCount(res.likesCount);
       onPostUpdated?.({
         ...post,
-        isLiked: !previousLiked,
-        likesCount: Math.max(0, likesCount + delta),
+        isLiked: res.isLiked,
+        likesCount: res.likesCount,
       });
     } catch (err: any) {
       // Revert optimistic update
       setIsLiked(previousLiked);
-      setLikesCount((prev) => Math.max(0, prev - delta));
-      toggleLikeInStore(post.id);
+      setLikesCount(previousCount);
       console.error('Failed to toggle like', err);
     } finally {
       setIsLiking(false);
@@ -83,8 +81,7 @@ export function PostCard({
 
     try {
       setIsDeleting(true);
-      await api.deletePost(post.id);
-      deletePostInStore(post.id);
+      await deletePostInStore(post.id);
       onPostDeleted?.(post.id);
     } catch (err: any) {
       alert(err.message || 'Failed to delete post');
@@ -103,13 +100,13 @@ export function PostCard({
   };
 
   return (
-    <article className="bg-zinc-950/80 border border-zinc-800/80 rounded-2xl p-5 backdrop-blur-sm transition-all hover:border-zinc-700/80">
+    <article className="bg-surface border border-border rounded-2xl p-5 shadow-xs transition-all hover:border-accent/40">
       {/* Post Header */}
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-3">
           <Link
             href={`/profile/${post.author.username}`}
-            className="w-10 h-10 rounded-full bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center font-bold text-white text-sm flex-shrink-0 hover:ring-2 hover:ring-cyan-400 transition-all"
+            className="w-10 h-10 rounded-full bg-gradient-to-tr from-accent to-accent-bright flex items-center justify-center font-bold text-white text-sm flex-shrink-0 hover:ring-2 hover:ring-accent transition-all"
           >
             {post.author.avatarUrl ? (
               <img
@@ -126,20 +123,20 @@ export function PostCard({
             <div className="flex items-center gap-2 flex-wrap">
               <Link
                 href={`/profile/${post.author.username}`}
-                className="text-white font-semibold text-sm hover:underline"
+                className="text-primary font-semibold text-sm hover:underline"
               >
                 {post.author.displayName || post.author.username}
               </Link>
-              <span className="text-zinc-500 text-xs">@{post.author.username}</span>
+              <span className="text-secondary text-xs">@{post.author.username}</span>
             </div>
 
-            <div className="flex items-center gap-2 text-zinc-500 text-xs mt-0.5">
+            <div className="flex items-center gap-2 text-secondary text-xs mt-0.5">
               <span>{new Date(post.createdAt).toLocaleDateString()}</span>
               <span>•</span>
               <span className="flex items-center gap-1">
                 {post.visibility === 'FOLLOWERS' ? (
                   <>
-                    <Users className="w-3 h-3 text-indigo-400" />
+                    <Users className="w-3 h-3 text-accent-bright" />
                     <span>Followers only</span>
                   </>
                 ) : (
@@ -155,20 +152,24 @@ export function PostCard({
 
         {/* Author Actions */}
         {isAuthor && (
-          <button
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="text-zinc-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-zinc-900 transition-colors"
-            title="Delete post"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-secondary hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 text-xs font-medium transition-all cursor-pointer disabled:opacity-50"
+              title="Delete post"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Delete</span>
+            </button>
+          </div>
         )}
       </div>
 
       {/* Post Content */}
       {post.content && (
-        <p className="text-zinc-200 text-sm whitespace-pre-wrap leading-relaxed break-words mb-3">
+        <p className="text-primary text-sm whitespace-pre-wrap leading-relaxed break-words mb-3">
           {post.content}
         </p>
       )}
@@ -181,38 +182,38 @@ export function PostCard({
       )}
 
       {/* Action Bar (Like, Comment, Share) */}
-      <div className="flex items-center justify-between pt-3 border-t border-zinc-800/80 text-zinc-400 text-xs">
+      <div className="flex items-center justify-between pt-3 border-t border-border text-secondary text-xs">
         <div className="flex items-center gap-6">
           {/* Like Button */}
           <button
             onClick={handleLike}
             disabled={isLiking}
             className={`flex items-center gap-1.5 transition-colors group ${
-              isLiked ? 'text-rose-500' : 'hover:text-rose-400'
+              isLiked ? 'text-status-busy' : 'hover:text-status-busy'
             }`}
           >
             <Heart
               className={`w-4 h-4 transition-transform group-hover:scale-110 ${
-                isLiked ? 'fill-rose-500 stroke-rose-500' : ''
+                isLiked ? 'fill-status-busy stroke-status-busy' : ''
               }`}
             />
-            <span className="font-medium">{likesCount}</span>
+            <span className="font-medium text-primary">{likesCount}</span>
           </button>
 
           {/* Comment Toggle Button */}
           <button
             onClick={() => setShowComments((prev) => !prev)}
-            className="flex items-center gap-1.5 hover:text-cyan-400 transition-colors group"
+            className="flex items-center gap-1.5 hover:text-accent-bright transition-colors group"
           >
             <MessageCircle className="w-4 h-4 transition-transform group-hover:scale-110" />
-            <span className="font-medium">{commentsCount}</span>
+            <span className="font-medium text-primary">{commentsCount}</span>
           </button>
         </div>
 
         {/* Share Permalink Button */}
         <button
           onClick={handleShare}
-          className="flex items-center gap-1.5 hover:text-white transition-colors"
+          className="flex items-center gap-1.5 hover:text-primary transition-colors"
           title="Copy link to post"
         >
           <Share2 className="w-4 h-4" />

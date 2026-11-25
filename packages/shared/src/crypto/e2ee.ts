@@ -120,12 +120,16 @@ export async function importPrivateEcdsaKey(jwkJson: string): Promise<CryptoKey>
  */
 
 export async function generateSignedPreKey(
-  signingPrivateKey: CryptoKey
+  signingPrivateKey: CryptoKey,
+  identityKeyPublicJwk?: string
 ): Promise<{ preKey: CryptoKeyPair; preKeyPublicJwk: string; signatureBase64: string }> {
   const subtle = getSubtle();
   const preKey = await generateIdentityKeyPair();
   const preKeyPublicJwk = await exportJwk(preKey.publicKey);
-  const data = new TextEncoder().encode(preKeyPublicJwk);
+  const payload = identityKeyPublicJwk
+    ? `${identityKeyPublicJwk}:::${preKeyPublicJwk}`
+    : preKeyPublicJwk;
+  const data = new TextEncoder().encode(payload);
 
   const signature = await subtle.sign(
     { name: 'ECDSA', hash: { name: 'SHA-256' } },
@@ -143,13 +147,17 @@ export async function generateSignedPreKey(
 export async function verifySignedPreKey(
   signedPreKeyPublicJwk: string,
   signatureBase64: string,
-  signingKeyPublicJwk: string
+  signingKeyPublicJwk: string,
+  identityKeyPublicJwk?: string
 ): Promise<boolean> {
   try {
     const subtle = getSubtle();
     const signingPublicKey = await importPublicEcdsaKey(signingKeyPublicJwk);
     const signature = base64ToArrayBuffer(signatureBase64);
-    const data = new TextEncoder().encode(signedPreKeyPublicJwk);
+    const payload = identityKeyPublicJwk
+      ? `${identityKeyPublicJwk}:::${signedPreKeyPublicJwk}`
+      : signedPreKeyPublicJwk;
+    const data = new TextEncoder().encode(payload);
 
     return await subtle.verify(
       { name: 'ECDSA', hash: { name: 'SHA-256' } },
@@ -160,6 +168,39 @@ export async function verifySignedPreKey(
   } catch {
     return false;
   }
+}
+
+/**
+ * Cryptographically binds identityKeyPublic + signingKeyPublic + signedPreKeyPublic
+ * via an ECDSA signature from signingPrivateKey.
+ */
+export async function signDeviceBundle(
+  signingPrivateKey: CryptoKey,
+  identityKeyPublicJwk: string,
+  signedPreKeyPublicJwk: string
+): Promise<string> {
+  const subtle = getSubtle();
+  const data = new TextEncoder().encode(`${identityKeyPublicJwk}:::${signedPreKeyPublicJwk}`);
+  const signature = await subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    signingPrivateKey,
+    data
+  );
+  return arrayBufferToBase64(signature);
+}
+
+export async function verifyDeviceBundle(
+  identityKeyPublicJwk: string,
+  signedPreKeyPublicJwk: string,
+  signatureBase64: string,
+  signingKeyPublicJwk: string
+): Promise<boolean> {
+  return verifySignedPreKey(
+    signedPreKeyPublicJwk,
+    signatureBase64,
+    signingKeyPublicJwk,
+    identityKeyPublicJwk
+  );
 }
 
 /**
@@ -233,6 +274,7 @@ export interface EncryptMessageParams {
   conversationId: string;
   senderId: string;
   senderDeviceId: string;
+  senderSigningPrivateKey?: CryptoKey;
   recipients: Array<{
     deviceId: string;
     identityPublicKey: string;
@@ -253,6 +295,7 @@ export interface EncryptMessageResult {
       wrapIv: string;
       oneTimePreKeyId?: number | null;
     }>;
+    senderSignature?: string;
   };
 }
 
@@ -310,13 +353,30 @@ export async function encryptMessage(params: EncryptMessageParams): Promise<Encr
     };
   }
 
+  const ciphertextBase64 = arrayBufferToBase64(ciphertextBuffer);
+  const ivBase64 = arrayBufferToBase64(iv);
+
+  let senderSignature: string | undefined;
+  if (params.senderSigningPrivateKey) {
+    const signPayload = new TextEncoder().encode(
+      `${params.conversationId}:${params.senderId}:${params.senderDeviceId}:${ephemeralPublicKeyJwk}:${ivBase64}:${ciphertextBase64}`
+    );
+    const sigBuffer = await subtle.sign(
+      { name: 'ECDSA', hash: { name: 'SHA-256' } },
+      params.senderSigningPrivateKey,
+      signPayload
+    );
+    senderSignature = arrayBufferToBase64(sigBuffer);
+  }
+
   return {
-    ciphertext: arrayBufferToBase64(ciphertextBuffer),
+    ciphertext: ciphertextBase64,
     e2eeHeader: {
       version: 1,
       ephemeralPublicKey: ephemeralPublicKeyJwk,
-      iv: arrayBufferToBase64(iv),
+      iv: ivBase64,
       devices,
+      ...(senderSignature ? { senderSignature } : {}),
     },
   };
 }
@@ -332,15 +392,40 @@ export interface DecryptMessageParams {
       wrapIv: string;
       oneTimePreKeyId?: number | null;
     }>;
+    senderSignature?: string;
   };
   recipientDeviceId: string;
   recipientPrivateKey: CryptoKey; // PreKey matching the one used for encryption
   conversationId: string;
   senderId: string;
+  senderDeviceId?: string;
+  senderSigningPublicKey?: string;
+  requireSenderSignature?: boolean;
 }
 
 export async function decryptMessage(params: DecryptMessageParams): Promise<string> {
   const subtle = getSubtle();
+
+  if (params.senderSigningPublicKey) {
+    if (params.e2eeHeader.senderSignature) {
+      const signingKey = await importPublicEcdsaKey(params.senderSigningPublicKey);
+      const signature = base64ToArrayBuffer(params.e2eeHeader.senderSignature);
+      const signPayload = new TextEncoder().encode(
+        `${params.conversationId}:${params.senderId}:${params.senderDeviceId ?? ''}:${params.e2eeHeader.ephemeralPublicKey}:${params.e2eeHeader.iv}:${params.ciphertext}`
+      );
+      const isValid = await subtle.verify(
+        { name: 'ECDSA', hash: { name: 'SHA-256' } },
+        signingKey,
+        signature,
+        signPayload
+      );
+      if (!isValid) {
+        throw new Error('Sender authentication signature verification failed');
+      }
+    } else if (params.requireSenderSignature) {
+      throw new Error('Missing sender authentication signature');
+    }
+  }
 
   const deviceEnvelope = params.e2eeHeader.devices[params.recipientDeviceId];
   if (!deviceEnvelope) {
@@ -390,14 +475,19 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<stri
 /**
  * Safety Number Computation
  * 15-digit visual fingerprint: 3 blocks of 5 digits: XXXXX XXXXX XXXXX
+ * Binds both identityKeyPublic and (when provided) signingKeyPublic for each party.
  */
 export async function computeSafetyNumber(
   identityKeyA: string,
-  identityKeyB: string
+  identityKeyB: string,
+  signingKeyA?: string,
+  signingKeyB?: string
 ): Promise<string> {
   const subtle = getSubtle();
+  const tokenA = signingKeyA ? `${identityKeyA}|${signingKeyA}` : identityKeyA;
+  const tokenB = signingKeyB ? `${identityKeyB}|${signingKeyB}` : identityKeyB;
   // Sort canonically so both parties compute the exact same fingerprint
-  const sorted = [identityKeyA, identityKeyB].sort();
+  const sorted = [tokenA, tokenB].sort();
   const data = new TextEncoder().encode(sorted.join(':::'));
   const digest = await subtle.digest('SHA-256', data);
   const bytes = new Uint8Array(digest);
