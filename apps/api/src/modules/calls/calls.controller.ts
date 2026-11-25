@@ -9,11 +9,13 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { CallsService } from './calls.service';
 import {
   IceServersResponse,
   PaginatedCallsResponse,
   callPaginationSchema,
+  CallPaginationQuery,
 } from '@chatterbox/shared';
 
 @UseGuards(JwtAuthGuard)
@@ -31,14 +33,9 @@ export class CallsController {
   @HttpCode(HttpStatus.OK)
   async getCallHistory(
     @CurrentUser('userId') userId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limitStr?: string,
+    @Query(new ZodValidationPipe(callPaginationSchema)) query: CallPaginationQuery,
   ): Promise<PaginatedCallsResponse> {
-    const parsed = callPaginationSchema.parse({
-      cursor,
-      limit: limitStr,
-    });
-    return this.callsService.getUserCallHistory(userId, parsed.cursor, parsed.limit);
+    return this.callsService.getUserCallHistory(userId, query.cursor, query.limit);
   }
 
   @Get('conversations/:id/calls')
@@ -46,18 +43,13 @@ export class CallsController {
   async getConversationCallHistory(
     @CurrentUser('userId') userId: string,
     @Param('id') conversationId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limitStr?: string,
+    @Query(new ZodValidationPipe(callPaginationSchema)) query: CallPaginationQuery,
   ): Promise<PaginatedCallsResponse> {
-    const parsed = callPaginationSchema.parse({
-      cursor,
-      limit: limitStr,
-    });
     return this.callsService.getConversationCallHistory(
       userId,
       conversationId,
-      parsed.cursor,
-      parsed.limit,
+      query.cursor,
+      query.limit,
     );
   }
 }

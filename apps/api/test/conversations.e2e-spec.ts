@@ -195,6 +195,13 @@ describe('Conversations & Messages Module (REST E2E)', () => {
 
       expect(res.body.data.members.find((m: any) => m.userId === idC)).toBeUndefined();
     });
+
+    it('DELETE /api/v1/conversations/:id/members/:userId -> Member cannot leave a 1:1 DM (400 Bad Request)', async () => {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/conversations/${dmConversationId}/members/${idA}`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(400);
+    });
   });
 
   describe('3. Strict 403 Security Boundary (Stranger Isolation)', () => {
@@ -354,6 +361,20 @@ describe('Conversations & Messages Module (REST E2E)', () => {
         .expect(200);
 
       expect(res.body.data.reactions.length).toBe(0);
+    });
+
+    it('DELETE /api/v1/messages/:id/reactions/:emoji -> stranger receives 403 Forbidden', async () => {
+      await request(app.getHttpServer())
+        .delete(`/api/v1/messages/${testMessageId}/reactions/🔥`)
+        .set('Authorization', `Bearer ${tokenD}`)
+        .expect(403);
+    });
+
+    it('DELETE /api/v1/messages/nonexistent/reactions/:emoji -> clean 404 Not Found', async () => {
+      await request(app.getHttpServer())
+        .delete('/api/v1/messages/cxxxxxxxxxxxxxxxxxxxxxxx/reactions/🔥')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(404);
     });
 
     it('DELETE /api/v1/messages/:id -> sender can soft delete message', async () => {

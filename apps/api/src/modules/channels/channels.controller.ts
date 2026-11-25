@@ -23,10 +23,12 @@ import {
   updateChannelSchema,
   sendChannelMessageSchema,
   editChannelMessageSchema,
+  cursorPaginationSchema,
   CreateChannelDto,
   UpdateChannelDto,
   SendChannelMessageDto,
   EditChannelMessageDto,
+  CursorPaginationQuery,
 } from '@chatterbox/shared';
 
 @Controller()
@@ -46,28 +48,39 @@ export class ChannelsController {
   }
 
   @Patch('channels/:channelId')
+  @UseGuards(CommunityMemberGuard, CommunityRoleGuard)
+  @RequireCommunityRole('ADMIN')
   async updateChannel(
+    @CurrentUser('userId') userId: string,
     @Param('channelId') channelId: string,
     @Body(new ZodValidationPipe(updateChannelSchema)) dto: UpdateChannelDto,
   ) {
-    return this.channelsService.updateChannel(channelId, dto);
+    return this.channelsService.updateChannel(userId, channelId, dto);
   }
 
   @Delete('channels/:channelId')
+  @UseGuards(CommunityMemberGuard, CommunityRoleGuard)
+  @RequireCommunityRole('ADMIN')
   @HttpCode(HttpStatus.OK)
-  async deleteChannel(@Param('channelId') channelId: string) {
-    return this.channelsService.deleteChannel(channelId);
+  async deleteChannel(
+    @CurrentUser('userId') userId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    return this.channelsService.deleteChannel(userId, channelId);
   }
 
   @Get('channels/:channelId/messages')
   async getChannelMessages(
     @CurrentUser('userId') userId: string,
     @Param('channelId') channelId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(cursorPaginationSchema)) query: CursorPaginationQuery,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 50;
-    return this.channelsService.getChannelMessages(userId, channelId, cursor, parsedLimit);
+    return this.channelsService.getChannelMessages(
+      userId,
+      channelId,
+      query.cursor,
+      query.limit ?? 50,
+    );
   }
 
   @Post('channels/:channelId/messages')

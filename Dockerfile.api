@@ -24,6 +24,10 @@ RUN pnpm --filter @chatterbox/shared build
 # Generate Prisma Client & Build API
 RUN cd apps/api && pnpm prisma generate && pnpm build
 
+# Stage generated .prisma client to a deterministic path
+RUN mkdir -p /app/.prisma-generated && \
+    cp -R /app/node_modules/.pnpm/@prisma+client*/node_modules/.prisma /app/.prisma-generated/
+
 # Stage 2: Production Runner
 FROM node:22-alpine AS runner
 
@@ -47,10 +51,10 @@ RUN pnpm install --prod --frozen-lockfile
 # Copy compiled shared package
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 
-# Copy compiled API dist and Prisma schema
+# Copy compiled API dist, Prisma schema, and generated Prisma Client
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --from=builder /app/apps/api/prisma ./apps/api/prisma
-COPY --from=builder /app/node_modules/.pnpm/@prisma+client* ./node_modules/
+COPY --from=builder /app/.prisma-generated/.prisma ./node_modules/.prisma
 
 USER chatterbox
 

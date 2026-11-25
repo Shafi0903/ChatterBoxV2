@@ -244,9 +244,11 @@ describe('Auth Module (E2E)', () => {
       .expect(200);
 
     const freshCookie = extractCookie(loginRes, 'refreshToken')!;
+    const freshAccessToken = loginRes.body.data.accessToken;
 
     const logoutRes = await request(app.getHttpServer())
       .post('/api/v1/auth/logout')
+      .set('Authorization', `Bearer ${freshAccessToken}`)
       .set('Cookie', [freshCookie])
       .expect(204);
 

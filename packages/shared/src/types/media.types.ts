@@ -35,5 +35,6 @@ export interface PresignUploadResponse {
 export interface MediaDownloadUrlResponse {
   attachmentId: string;
   downloadUrl: string;
+  proxyUrl: string;
   expiresIn: number;
 }

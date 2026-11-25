@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { assertCanViewProfileContent } from '../../common/privacy/profile-visibility.util';
 import {
   CreatePostDto,
   CreateCommentDto,
@@ -124,10 +125,21 @@ export class PostsService {
       });
 
       if (dto.attachmentIds && dto.attachmentIds.length > 0) {
-        await tx.mediaAttachment.updateMany({
-          where: { id: { in: dto.attachmentIds } },
+        const linked = await tx.mediaAttachment.updateMany({
+          where: {
+            id: { in: dto.attachmentIds },
+            uploaderId: authorId,
+            status: 'READY',
+            messageId: null,
+            channelMessageId: null,
+            postId: null,
+            storyId: null,
+          },
           data: { postId: created.id },
         });
+        if (linked.count !== dto.attachmentIds.length) {
+          throw new BadRequestException('One or more attachments are invalid or already linked');
+        }
       }
 
       return tx.post.findUnique({
@@ -158,15 +170,36 @@ export class PostsService {
 
     if (tab === 'explore') {
       where.visibility = 'PUBLIC';
+      where.author = {
+        OR: [
+          { settings: { is: null } },
+          { settings: { is: { profileVisibility: 'PUBLIC' } } },
+        ],
+      };
     } else {
-      // tab === 'following': include posts by users caller follows + caller's own posts
+      // tab === 'following': include posts by non-PRIVATE followed users + caller's own posts
       const following = await this.prisma.follow.findMany({
         where: { followerId: callerId },
         select: { followingId: true },
       });
-      const allowedAuthorIds = [...following.map((f) => f.followingId), callerId];
+      const followingIds = following.map((f) => f.followingId);
 
-      where.authorId = { in: allowedAuthorIds };
+      where.OR = [
+        { authorId: callerId },
+        {
+          AND: [
+            { authorId: { in: followingIds } },
+            {
+              author: {
+                OR: [
+                  { settings: { is: null } },
+                  { settings: { is: { profileVisibility: { not: 'PRIVATE' } } } },
+                ],
+              },
+            },
+          ],
+        },
+      ];
     }
 
     const posts = await this.prisma.post.findMany({
@@ -199,6 +232,8 @@ export class PostsService {
     cursor?: string,
     limit = 20,
   ): Promise<{ data: PostItem[]; meta: { nextCursor: string | null; hasMore: boolean } }> {
+    await assertCanViewProfileContent(this.prisma, userId, callerId);
+
     const take = Math.min(Math.max(1, limit), 50);
 
     const isSelf = callerId === userId;
@@ -261,6 +296,8 @@ export class PostsService {
       throw new NotFoundException('Post not found');
     }
 
+    await assertCanViewProfileContent(this.prisma, post.authorId, callerId);
+
     if (post.visibility === 'FOLLOWERS' && post.authorId !== callerId) {
       const follow = await this.prisma.follow.findUnique({
         where: {
@@ -312,6 +349,8 @@ export class PostsService {
       throw new NotFoundException('Post not found');
     }
 
+    await assertCanViewProfileContent(this.prisma, post.authorId, callerId);
+
     // Check visibility
     if (post.visibility === 'FOLLOWERS' && post.authorId !== callerId) {
       const follow = await this.prisma.follow.findUnique({
@@ -332,25 +371,30 @@ export class PostsService {
     });
 
     if (!existingLike) {
-      await this.prisma.postLike.create({
-        data: { postId, userId: callerId },
-      });
+      try {
+        await this.prisma.postLike.create({
+          data: { postId, userId: callerId },
+        });
 
-      // Notification to post author (Adjustment #1: add postId)
-      const caller = await this.prisma.user.findUnique({
-        where: { id: callerId },
-        select: { username: true, profile: { select: { displayName: true } } },
-      });
-      const callerName = caller?.profile?.displayName || caller?.username || 'Someone';
+        // Notification to post author (Adjustment #1: add postId)
+        const caller = await this.prisma.user.findUnique({
+          where: { id: callerId },
+          select: { username: true, profile: { select: { displayName: true } } },
+        });
+        const callerName = caller?.profile?.displayName || caller?.username || 'Someone';
 
-      await this.notificationsService.createNotification({
-        userId: post.authorId,
-        actorId: callerId,
-        type: 'POST_LIKE',
-        postId: post.id,
-        title: 'Post Liked',
-        body: `${callerName} liked your post`,
-      });
+        await this.notificationsService.createNotification({
+          userId: post.authorId,
+          actorId: callerId,
+          type: 'POST_LIKE',
+          postId: post.id,
+          title: 'Post Liked',
+          body: `${callerName} liked your post`,
+        });
+      } catch (err: any) {
+        // P2002: unique constraint failed on (postId, userId) concurrent race
+        if (err.code !== 'P2002') throw err;
+      }
     }
 
     const likesCount = await this.prisma.postLike.count({ where: { postId } });
@@ -390,6 +434,8 @@ export class PostsService {
     if (!post || post.deletedAt !== null) {
       throw new NotFoundException('Post not found');
     }
+
+    await assertCanViewProfileContent(this.prisma, post.authorId, callerId);
 
     if (post.visibility === 'FOLLOWERS' && post.authorId !== callerId) {
       const follow = await this.prisma.follow.findUnique({
@@ -439,6 +485,8 @@ export class PostsService {
     if (!post || post.deletedAt !== null) {
       throw new NotFoundException('Post not found');
     }
+
+    await assertCanViewProfileContent(this.prisma, post.authorId, authorId);
 
     if (post.visibility === 'FOLLOWERS' && post.authorId !== authorId) {
       const follow = await this.prisma.follow.findUnique({

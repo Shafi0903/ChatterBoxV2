@@ -10,6 +10,7 @@ import {
   UpdateUserSettingsDto,
 } from '@chatterbox/shared';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { assertCanViewProfileContent } from '../../common/privacy/profile-visibility.util';
 
 @Injectable()
 export class ProfilesService {
@@ -37,6 +38,8 @@ export class ProfilesService {
         message: `User '@${username}' not found`,
       });
     }
+
+    await assertCanViewProfileContent(this.prisma, user.id, callerId);
 
     // Zero fake data: fetch real PostgreSQL metrics
     const [postsCount, followersCount, followingCount, followRecord] = await Promise.all([
@@ -115,12 +118,21 @@ export class ProfilesService {
     });
 
     if (!settings) {
-      // Create default settings if not yet present
-      return this.prisma.userSettings.create({
-        data: {
-          userId,
-        },
-      });
+      try {
+        return await this.prisma.userSettings.create({
+          data: {
+            userId,
+          },
+        });
+      } catch (err: any) {
+        if (err?.code === 'P2002') {
+          const existing = await this.prisma.userSettings.findUnique({
+            where: { userId },
+          });
+          if (existing) return existing;
+        }
+        throw err;
+      }
     }
 
     return settings;

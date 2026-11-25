@@ -129,8 +129,8 @@ model User {
   createdInvites      CommunityInvite[] @relation("UserCreatedInvites")
 
   // Phase 6 Relations (Follows, Posts, Likes, Comments, Stories)
-  followers           Follow[]          @relation("UserFollowers")
-  following           Follow[]          @relation("UserFollowing")
+  followers           Follow[]          @relation("FollowingUser")
+  following           Follow[]          @relation("FollowerUser")
   posts               Post[]            @relation("UserPosts")
   postLikes           PostLike[]        @relation("UserPostLikes")
   postComments        PostComment[]     @relation("UserPostComments")
@@ -485,8 +485,8 @@ model Follow {
   followingId String
   createdAt   DateTime @default(now())
 
-  follower    User     @relation("UserFollowers", fields: [followerId], references: [id], onDelete: Cascade)
-  following   User     @relation("UserFollowing", fields: [followingId], references: [id], onDelete: Cascade)
+  follower    User     @relation("FollowerUser", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("FollowingUser", fields: [followingId], references: [id], onDelete: Cascade)
 
   @@unique([followerId, followingId])
   @@index([followerId])

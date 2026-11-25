@@ -5,6 +5,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -37,6 +38,7 @@ const channelMessageInclude = {
       id: true,
       content: true,
       senderId: true,
+      deletedAt: true,
       sender: {
         select: {
           username: true,
@@ -81,67 +83,96 @@ export class ChannelsService {
       throw new BadRequestException(`Channel #${slugName} already exists in this community`);
     }
 
-    const channel = await this.prisma.channel.create({
-      data: {
-        communityId,
-        name: slugName,
-        topic: dto.topic?.trim() || null,
-        type: dto.type || 'TEXT',
-        position: dto.position ?? 0,
-      },
-    });
+    try {
+      const channel = await this.prisma.channel.create({
+        data: {
+          communityId,
+          name: slugName,
+          topic: dto.topic?.trim() || null,
+          type: dto.type || 'TEXT',
+          position: dto.position ?? 0,
+        },
+      });
 
-    return {
-      id: channel.id,
-      communityId: channel.communityId,
-      name: channel.name,
-      topic: channel.topic,
-      type: channel.type as any,
-      position: channel.position,
-      createdAt: channel.createdAt,
-    };
+      return {
+        id: channel.id,
+        communityId: channel.communityId,
+        name: channel.name,
+        topic: channel.topic,
+        type: channel.type as any,
+        position: channel.position,
+        createdAt: channel.createdAt,
+      };
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        throw new ConflictException(`Channel #${slugName} already exists in this community`);
+      }
+      throw err;
+    }
   }
 
   /**
    * Update channel metadata (OWNER or ADMIN)
    */
   async updateChannel(
+    userId: string,
     channelId: string,
     dto: UpdateChannelDto,
   ): Promise<ChannelItem> {
     const channel = await this.prisma.channel.findUnique({ where: { id: channelId } });
     if (!channel) throw new NotFoundException('Channel not found');
 
+    const member = await this.prisma.communityMember.findUnique({
+      where: { communityId_userId: { communityId: channel.communityId, userId } },
+    });
+    if (!member || (member.role !== 'OWNER' && member.role !== 'ADMIN')) {
+      throw new ForbiddenException('Only community administrators can update channels');
+    }
+
     const slugName = dto.name
       ? dto.name.toLowerCase().trim().replace(/[^a-z0-9-]+/g, '-')
       : undefined;
 
-    const updated = await this.prisma.channel.update({
-      where: { id: channelId },
-      data: {
-        ...(slugName ? { name: slugName } : {}),
-        ...(dto.topic !== undefined ? { topic: dto.topic?.trim() || null } : {}),
-        ...(dto.position !== undefined ? { position: dto.position } : {}),
-      },
-    });
+    try {
+      const updated = await this.prisma.channel.update({
+        where: { id: channelId },
+        data: {
+          ...(slugName ? { name: slugName } : {}),
+          ...(dto.topic !== undefined ? { topic: dto.topic?.trim() || null } : {}),
+          ...(dto.position !== undefined ? { position: dto.position } : {}),
+        },
+      });
 
-    return {
-      id: updated.id,
-      communityId: updated.communityId,
-      name: updated.name,
-      topic: updated.topic,
-      type: updated.type as any,
-      position: updated.position,
-      createdAt: updated.createdAt,
-    };
+      return {
+        id: updated.id,
+        communityId: updated.communityId,
+        name: updated.name,
+        topic: updated.topic,
+        type: updated.type as any,
+        position: updated.position,
+        createdAt: updated.createdAt,
+      };
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        throw new ConflictException(`Channel #${slugName} already exists in this community`);
+      }
+      throw err;
+    }
   }
 
   /**
    * Delete channel (OWNER or ADMIN; prevent deleting last remaining channel)
    */
-  async deleteChannel(channelId: string): Promise<{ success: true }> {
+  async deleteChannel(userId: string, channelId: string): Promise<{ success: true }> {
     const channel = await this.prisma.channel.findUnique({ where: { id: channelId } });
     if (!channel) throw new NotFoundException('Channel not found');
+
+    const member = await this.prisma.communityMember.findUnique({
+      where: { communityId_userId: { communityId: channel.communityId, userId } },
+    });
+    if (!member || (member.role !== 'OWNER' && member.role !== 'ADMIN')) {
+      throw new ForbiddenException('Only community administrators can delete channels');
+    }
 
     const channelCount = await this.prisma.channel.count({
       where: { communityId: channel.communityId },
@@ -218,6 +249,17 @@ export class ChannelsService {
       throw new ForbiddenException('Only community moderators and administrators can post in announcement channels');
     }
 
+    // Verify replyToId belongs to the same channel if provided
+    if (dto.replyToId) {
+      const replyTarget = await this.prisma.channelMessage.findUnique({
+        where: { id: dto.replyToId },
+        select: { id: true, channelId: true },
+      });
+      if (!replyTarget || replyTarget.channelId !== channelId) {
+        throw new BadRequestException('Referenced reply message does not exist in this channel');
+      }
+    }
+
     // Adjustment #1: Verify attachment IDs if provided
     let verifiedAttachments: any[] = [];
     if (dto.attachmentIds && dto.attachmentIds.length > 0) {
@@ -261,11 +303,22 @@ export class ChannelsService {
           include: channelMessageInclude,
         });
 
-        if (verifiedAttachments.length > 0) {
-          await tx.mediaAttachment.updateMany({
-            where: { id: { in: dto.attachmentIds } },
+        if (verifiedAttachments.length > 0 && dto.attachmentIds) {
+          const linked = await tx.mediaAttachment.updateMany({
+            where: {
+              id: { in: dto.attachmentIds },
+              uploaderId: senderId,
+              status: 'READY',
+              messageId: null,
+              channelMessageId: null,
+              postId: null,
+              storyId: null,
+            },
             data: { channelMessageId: msg.id },
           });
+          if (linked.count !== dto.attachmentIds.length) {
+            throw new BadRequestException('One or more attachments are invalid or already linked');
+          }
         }
 
         const reloaded = await tx.channelMessage.findUnique({
@@ -383,7 +436,10 @@ export class ChannelsService {
 
     const deleted = await this.prisma.channelMessage.update({
       where: { id: messageId },
-      data: { deletedAt: new Date() },
+      data: {
+        deletedAt: new Date(),
+        content: 'This message was deleted',
+      },
     });
 
     this.realtimeService.emitToRoom(
@@ -416,7 +472,7 @@ export class ChannelsService {
       replyTo: m.replyTo
         ? {
             id: m.replyTo.id,
-            content: m.replyTo.content,
+            content: m.replyTo.deletedAt ? 'This message was deleted' : m.replyTo.content,
             senderId: m.replyTo.senderId,
             senderName:
               m.replyTo.sender.profile?.displayName ||

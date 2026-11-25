@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { e2eeHeaderSchema } from './encryption.schema';
 
 // Adjustment 1: Support captionless media messages (content can be empty if attachmentIds is present)
 export const sendMessageSchema = z
@@ -10,7 +11,7 @@ export const sendMessageSchema = z
     attachmentIds: z.array(z.string().min(1)).optional(),
     isEncrypted: z.boolean().optional(),
     senderDeviceId: z.string().min(1).optional(),
-    e2eeHeader: z.any().optional(),
+    e2eeHeader: e2eeHeaderSchema.optional(),
   })
   .refine(
     (data) => {
@@ -26,9 +27,13 @@ export const sendMessageSchema = z
 export type SendMessageDto = z.infer<typeof sendMessageSchema>;
 
 export const editMessageSchema = z.object({
-  content: z.string().min(1, 'Content cannot be empty').max(4000, 'Message cannot exceed 4000 characters'),
+  content: z
+    .string()
+    .trim()
+    .min(1, 'Content cannot be empty')
+    .max(4000, 'Message cannot exceed 4000 characters'),
   senderDeviceId: z.string().min(1).optional(),
-  e2eeHeader: z.any().optional(),
+  e2eeHeader: e2eeHeaderSchema.optional(),
 });
 export type EditMessageDto = z.infer<typeof editMessageSchema>;
 

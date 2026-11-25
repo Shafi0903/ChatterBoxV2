@@ -99,6 +99,7 @@ export class CommunitiesService {
       return comm;
     });
 
+    this.realtimeService.joinUserSocketsToNamedRoom(userId, `community:${community.id}`);
     return this.getCommunityItem(userId, community.id);
   }
 
@@ -340,6 +341,7 @@ export class CommunitiesService {
       update: {},
     });
 
+    this.realtimeService.joinUserSocketsToNamedRoom(userId, `community:${communityId}`);
     return this.getCommunityItem(userId, communityId);
   }
 
@@ -371,7 +373,8 @@ export class CommunitiesService {
       where: { id: member.id },
     });
 
-    // Adjustment #2: Evict active sockets of user from all community channel rooms
+    // Evict active sockets of user from community & all community channel rooms
+    this.realtimeService.leaveUserSocketsFromRoom(userId, `community:${communityId}`);
     channels.forEach((ch) => {
       this.realtimeService.leaveUserSocketsFromRoom(userId, `channel:${ch.id}`);
     });
@@ -424,6 +427,50 @@ export class CommunitiesService {
   }
 
   /**
+   * Transfer Community Ownership atomically
+   */
+  async transferOwnership(
+    callerId: string,
+    communityId: string,
+    targetUserId: string,
+  ): Promise<{ success: true }> {
+    if (targetUserId === callerId) {
+      throw new BadRequestException('You are already the owner of this community');
+    }
+
+    const callerMember = await this.prisma.communityMember.findUnique({
+      where: { communityId_userId: { communityId, userId: callerId } },
+    });
+    if (!callerMember || callerMember.role !== 'OWNER') {
+      throw new ForbiddenException('Only the current community OWNER can transfer ownership');
+    }
+
+    const targetMember = await this.prisma.communityMember.findUnique({
+      where: { communityId_userId: { communityId, userId: targetUserId } },
+    });
+    if (!targetMember) {
+      throw new NotFoundException('Target user is not a member of this community');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.communityMember.update({
+        where: { id: callerMember.id },
+        data: { role: 'ADMIN' },
+      }),
+      this.prisma.communityMember.update({
+        where: { id: targetMember.id },
+        data: { role: 'OWNER' },
+      }),
+      this.prisma.community.update({
+        where: { id: communityId },
+        data: { ownerId: targetUserId },
+      }),
+    ]);
+
+    return { success: true };
+  }
+
+  /**
    * Kick member with strict hierarchy enforcement (Adjustment #2: Evict socket)
    */
   async kickMember(
@@ -457,7 +504,8 @@ export class CommunitiesService {
       where: { id: targetMember.id },
     });
 
-    // Adjustment #2: Evict sockets from channel rooms
+    // Evict sockets from community & channel rooms
+    this.realtimeService.leaveUserSocketsFromRoom(targetUserId, `community:${communityId}`);
     channels.forEach((ch) => {
       this.realtimeService.leaveUserSocketsFromRoom(targetUserId, `channel:${ch.id}`);
     });
@@ -554,29 +602,44 @@ export class CommunitiesService {
         return invite.community;
       }
 
-      // Atomic check for max uses
-      if (invite.maxUses !== null && invite.uses >= invite.maxUses) {
-        throw new BadRequestException('This invite has reached its maximum uses');
+      // Atomic check & increment for maxUses (prevents concurrent invite race)
+      if (invite.maxUses !== null) {
+        const incremented = await tx.communityInvite.updateMany({
+          where: {
+            id: invite.id,
+            uses: { lt: invite.maxUses },
+          },
+          data: { uses: { increment: 1 } },
+        });
+        if (incremented.count === 0) {
+          throw new BadRequestException('This invite has reached its maximum uses');
+        }
+      } else {
+        await tx.communityInvite.update({
+          where: { id: invite.id },
+          data: { uses: { increment: 1 } },
+        });
       }
 
-      // Increment uses atomically
-      await tx.communityInvite.update({
-        where: { id: invite.id },
-        data: { uses: { increment: 1 } },
-      });
-
-      // Add user as MEMBER
-      await tx.communityMember.create({
-        data: {
-          communityId: invite.communityId,
-          userId,
-          role: 'MEMBER',
-        },
-      });
+      // Add user as MEMBER (handle concurrent duplicate join cleanly)
+      try {
+        await tx.communityMember.create({
+          data: {
+            communityId: invite.communityId,
+            userId,
+            role: 'MEMBER',
+          },
+        });
+      } catch (err: any) {
+        if (err?.code !== 'P2002') {
+          throw err;
+        }
+      }
 
       return invite.community;
     });
 
+    this.realtimeService.joinUserSocketsToNamedRoom(userId, `community:${result.id}`);
     return this.getCommunityItem(userId, result.id);
   }
 

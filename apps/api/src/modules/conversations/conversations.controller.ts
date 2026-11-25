@@ -81,10 +81,11 @@ export class ConversationsController {
   @UseGuards(ConversationMemberGuard, ConversationAdminGuard)
   @HttpCode(HttpStatus.OK)
   async updateConversation(
+    @CurrentUser('userId') callerId: string,
     @Param('id') conversationId: string,
     @Body(new ZodValidationPipe(updateConversationSchema)) dto: UpdateConversationDto,
   ): Promise<ConversationItem> {
-    return this.conversationsService.updateConversation(conversationId, dto);
+    return this.conversationsService.updateConversation(callerId, conversationId, dto);
   }
 
   @Post(':id/members')

@@ -13,12 +13,14 @@ interface MessageFeedProps {
   conversationDetail: ConversationDetail | null;
 }
 
+const EMPTY_MESSAGES: MessageItem[] = [];
+
 export const MessageFeed: React.FC<MessageFeedProps> = ({
   conversationId,
   conversationDetail,
 }) => {
   const currentUserId = useAuthStore((s) => s.user?.id);
-  const messages = useChatStore((s) => s.messagesByConversationId[conversationId] || []);
+  const messages = useChatStore((s) => s.messagesByConversationId[conversationId] ?? EMPTY_MESSAGES);
   const hasMore = useChatStore((s) => s.hasMoreByConversationId[conversationId] || false);
   const isLoadingMore = useChatStore((s) => s.isLoadingMoreMessages);
   const fetchOlderMessages = useChatStore((s) => s.fetchOlderMessages);
@@ -32,6 +34,7 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   const [editingMsg, setEditingMsg] = useState<MessageItem | null>(null);
   const [deletingMsg, setDeletingMsg] = useState<MessageItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Check if current user is OWNER or ADMIN of group
   const isGroupOwnerOrAdmin = useMemo(() => {
@@ -94,11 +97,12 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   const handleConfirmDelete = async () => {
     if (!deletingMsg) return;
     setIsDeleting(true);
+    setDeleteError(null);
     try {
       await deleteMessage(deletingMsg.id);
       setDeletingMsg(null);
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      setDeleteError(err?.message || 'Failed to delete message. Please try again.');
     } finally {
       setIsDeleting(false);
     }
@@ -143,7 +147,10 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
               isGroup={conversationDetail?.type === 'GROUP'}
               canDeleteAsAdmin={isGroupOwnerOrAdmin}
               onEdit={(m) => setEditingMsg(m)}
-              onDelete={(m) => setDeletingMsg(m)}
+              onDelete={(m) => {
+                setDeleteError(null);
+                setDeletingMsg(m);
+              }}
             />
           ))}
         </div>
@@ -164,16 +171,27 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
       {/* Delete Confirmation Modal */}
       <Modal
         isOpen={Boolean(deletingMsg)}
-        onClose={() => setDeletingMsg(null)}
+        onClose={() => {
+          setDeleteError(null);
+          setDeletingMsg(null);
+        }}
         title="Delete Message"
         description="Are you sure you want to delete this message? Its content will be cleared."
       >
+        {deleteError && (
+          <div className="mb-3 p-2.5 rounded-xl bg-status-busy/10 border border-status-busy/30 text-xs text-status-busy">
+            {deleteError}
+          </div>
+        )}
         <div className="flex justify-end gap-2 mt-4">
           <Button
             type="button"
             variant="secondary"
             size="sm"
-            onClick={() => setDeletingMsg(null)}
+            onClick={() => {
+              setDeleteError(null);
+              setDeletingMsg(null);
+            }}
             disabled={isDeleting}
           >
             Cancel

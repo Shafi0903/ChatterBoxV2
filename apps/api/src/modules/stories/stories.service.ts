@@ -5,6 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { assertCanViewProfileContent } from '../../common/privacy/profile-visibility.util';
 import {
   CreateStoryDto,
   StoryItem,
@@ -107,10 +108,21 @@ export class StoriesService {
       });
 
       if (dto.attachmentId) {
-        await tx.mediaAttachment.update({
-          where: { id: dto.attachmentId },
+        const linked = await tx.mediaAttachment.updateMany({
+          where: {
+            id: dto.attachmentId,
+            uploaderId: authorId,
+            status: 'READY',
+            messageId: null,
+            channelMessageId: null,
+            postId: null,
+            storyId: null,
+          },
           data: { storyId: created.id },
         });
+        if (linked.count !== 1) {
+          throw new BadRequestException('Attachment is invalid or already linked');
+        }
       }
 
       return tx.story.findUnique({
@@ -133,18 +145,33 @@ export class StoriesService {
   async getStoriesFeed(callerId: string): Promise<AuthorStoriesGroup[]> {
     const now = new Date();
 
-    // 1. Get following IDs + self
+    // 1. Get following IDs
     const following = await this.prisma.follow.findMany({
       where: { followerId: callerId },
       select: { followingId: true },
     });
-    const allowedAuthorIds = [...following.map((f) => f.followingId), callerId];
+    const followingIds = following.map((f) => f.followingId);
 
-    // 2. Fetch all active stories
+    // 2. Fetch all active stories (excluding authors with PRIVATE profileVisibility)
     const stories = await this.prisma.story.findMany({
       where: {
-        authorId: { in: allowedAuthorIds },
         expiresAt: { gt: now },
+        OR: [
+          { authorId: callerId },
+          {
+            AND: [
+              { authorId: { in: followingIds } },
+              {
+                author: {
+                  OR: [
+                    { settings: { is: null } },
+                    { settings: { is: { profileVisibility: { not: 'PRIVATE' } } } },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
       },
       include: {
         author: { include: { profile: true } },
@@ -212,6 +239,8 @@ export class StoriesService {
     if (new Date(story.expiresAt) <= new Date()) {
       throw new NotFoundException('Story has expired');
     }
+
+    await assertCanViewProfileContent(this.prisma, story.authorId, callerId);
 
     // Visibility: author OR follower
     if (story.authorId !== callerId) {

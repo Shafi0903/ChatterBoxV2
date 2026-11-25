@@ -33,7 +33,11 @@ interface CommunityState {
   setMembersPanelOpen: (open: boolean) => void;
 
   fetchMyCommunities: () => Promise<void>;
-  selectCommunity: (communityId: string | null, targetChannelId?: string) => Promise<void>;
+  selectCommunity: (
+    communityId: string | null,
+    targetChannelId?: string,
+    forceRefresh?: boolean,
+  ) => Promise<void>;
   selectChannel: (channelId: string) => Promise<void>;
   fetchOlderMessages: (channelId: string) => Promise<void>;
   sendMessage: (
@@ -87,7 +91,7 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
     }
   },
 
-  selectCommunity: async (communityId, targetChannelId) => {
+  selectCommunity: async (communityId, targetChannelId, forceRefresh = false) => {
     if (!communityId) {
       const prevChannel = get().activeChannelId;
       if (prevChannel) {
@@ -103,21 +107,37 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       return;
     }
 
-    set({ isLoadingDetail: true, activeCommunityId: communityId });
+    if (!forceRefresh && get().activeCommunityId === communityId && get().activeCommunityDetail) {
+      if (targetChannelId && targetChannelId !== get().activeChannelId) {
+        await get().selectChannel(targetChannelId);
+      }
+      return;
+    }
+
+    const isSameCommunity = get().activeCommunityId === communityId;
+    const prevActiveChannelId = isSameCommunity ? get().activeChannelId : null;
+    if (!isSameCommunity) {
+      set({ isLoadingDetail: true, activeCommunityId: communityId });
+    }
     try {
       const detail = await api.getCommunity(communityId);
       set({ activeCommunityDetail: detail, isLoadingDetail: false });
 
       // Determine channel to select
-      let channelToSelect = targetChannelId;
-      if (!channelToSelect && detail.channels && detail.channels.length > 0) {
-        // Prefer 'general' or the first channel
-        const general = detail.channels.find((c) => c.name === 'general');
-        channelToSelect = general ? general.id : detail.channels[0].id;
+      const channels = detail.channels || [];
+      let channelToSelect: string | undefined = targetChannelId;
+      if (!channelToSelect && prevActiveChannelId && channels.some((c) => c.id === prevActiveChannelId)) {
+        channelToSelect = prevActiveChannelId;
+      }
+      if (!channelToSelect && channels.length > 0) {
+        const general = channels.find((c) => c.name === 'general');
+        channelToSelect = general ? general.id : channels[0].id;
       }
 
       if (channelToSelect) {
         await get().selectChannel(channelToSelect);
+      } else {
+        set({ activeChannelId: null });
       }
     } catch (err) {
       set({ isLoadingDetail: false });
@@ -126,6 +146,8 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
   },
 
   selectChannel: async (channelId) => {
+    if (get().activeChannelId === channelId) return;
+
     const prevChannel = get().activeChannelId;
     const socket = getSocket();
 
@@ -146,11 +168,14 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       set({ isLoadingMessages: true });
       try {
         const res = await api.getChannelMessages(channelId, undefined, 50);
+        const chronological = [...res.data].sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+        );
         set((state) => ({
           isLoadingMessages: false,
           messagesByChannelId: {
             ...state.messagesByChannelId,
-            [channelId]: res.data,
+            [channelId]: chronological,
           },
           hasMoreByChannelId: {
             ...state.hasMoreByChannelId,
@@ -181,7 +206,9 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       set((state) => {
         const currentList = state.messagesByChannelId[channelId] || [];
         const existingIds = new Set(currentList.map((m) => m.id));
-        const newOlder = res.data.filter((m) => !existingIds.has(m.id));
+        const newOlder = res.data
+          .filter((m) => !existingIds.has(m.id))
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
         return {
           isLoadingMoreMessages: false,

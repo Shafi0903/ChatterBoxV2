@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { CommunityDetail, updateCommunitySchema } from '@chatterbox/shared';
 import { api } from '../../lib/api';
@@ -37,6 +37,17 @@ export const CommunitySettingsModal: React.FC<CommunitySettingsModalProps> = ({
 
   const isOwner = community.callerRole === 'OWNER';
 
+  useEffect(() => {
+    if (isOpen) {
+      setName(community.name);
+      setDescription(community.description || '');
+      setIsPublic(community.isPublic);
+      setError(null);
+      setConfirmName('');
+      setDeleteError(null);
+    }
+  }, [isOpen, community]);
+
   if (!isOpen) return null;
 
   const handleSave = async (e: React.FormEvent) => {
@@ -58,7 +69,7 @@ export const CommunitySettingsModal: React.FC<CommunitySettingsModalProps> = ({
     try {
       await api.updateCommunity(community.id, parsed.data);
       await fetchMyCommunities();
-      await selectCommunity(community.id);
+      await selectCommunity(community.id, undefined, true);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to update community');

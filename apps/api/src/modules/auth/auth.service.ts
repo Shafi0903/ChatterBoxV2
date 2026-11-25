@@ -41,6 +41,15 @@ export class AuthService {
     const email = dto.email.toLowerCase().trim();
     const username = dto.username.toLowerCase().trim();
 
+    // Check reserved usernames (defense-in-depth)
+    const reserved = ['admin', 'administrator', 'support', 'moderator', 'system', 'chatterbox', 'official', 'security', 'root', 'help'];
+    if (reserved.includes(username)) {
+      throw new ConflictException({
+        code: 'CONFLICT',
+        message: 'This username is reserved and cannot be registered',
+      });
+    }
+
     // Check for existing email or username conflict
     const existing = await this.prisma.user.findFirst({
       where: {
@@ -65,31 +74,42 @@ export class AuthService {
     const passwordHash = await this.passwordService.hashPassword(dto.password);
 
     // Create user, profile, and default settings in a single transaction
-    const user = await this.prisma.$transaction(async (tx) => {
-      return tx.user.create({
-        data: {
-          email,
-          username,
-          passwordHash,
-          profile: {
-            create: {
-              displayName: dto.displayName.trim(),
+    let user;
+    try {
+      user = await this.prisma.$transaction(async (tx) => {
+        return tx.user.create({
+          data: {
+            email,
+            username,
+            passwordHash,
+            profile: {
+              create: {
+                displayName: dto.displayName.trim(),
+              },
+            },
+            settings: {
+              create: {
+                theme: 'DARK',
+                profileVisibility: 'PUBLIC',
+                showOnlineStatus: true,
+                showReadReceipts: true,
+                allowDirectMessages: true,
+                notifyNewMessages: true,
+                notifyMentions: true,
+              },
             },
           },
-          settings: {
-            create: {
-              theme: 'DARK',
-              profileVisibility: 'PUBLIC',
-              showOnlineStatus: true,
-              showReadReceipts: true,
-              allowDirectMessages: true,
-              notifyNewMessages: true,
-              notifyMentions: true,
-            },
-          },
-        },
+        });
       });
-    });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        throw new ConflictException({
+          code: 'CONFLICT',
+          message: 'An account with this email or username already exists',
+        });
+      }
+      throw err;
+    }
 
     // Generate tokens
     const accessToken = this.tokenService.generateAccessToken({
@@ -246,16 +266,24 @@ export class AuthService {
       });
     }
 
-    // Valid session: rotate old session and issue new pair
+    // Valid session: atomically revoke old session (only if still unrevoked) and issue new pair
     const newRefreshToken = this.tokenService.generateRefreshToken();
     const newRefreshTokenHash = this.tokenService.hashRefreshToken(newRefreshToken);
 
-    await this.prisma.$transaction([
-      this.prisma.session.update({
-        where: { id: session.id },
+    const rotated = await this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.session.updateMany({
+        where: {
+          id: session.id,
+          revokedAt: null,
+        },
         data: { revokedAt: new Date() },
-      }),
-      this.prisma.session.create({
+      });
+
+      if (revoked.count === 0) {
+        return false;
+      }
+
+      await tx.session.create({
         data: {
           userId: session.userId,
           refreshTokenHash: newRefreshTokenHash,
@@ -263,8 +291,27 @@ export class AuthService {
           ipAddress,
           expiresAt: this.tokenService.getRefreshTokenExpiry(),
         },
-      }),
-    ]);
+      });
+
+      return true;
+    });
+
+    if (!rotated) {
+      this.logger.warn(
+        `Concurrent refresh token rotation detected for userId: ${session.userId}. Revoking all sessions!`,
+      );
+      await this.prisma.session.updateMany({
+        where: {
+          userId: session.userId,
+          revokedAt: null,
+        },
+        data: { revokedAt: new Date() },
+      });
+      throw new UnauthorizedException({
+        code: 'REVOKED_REFRESH_TOKEN',
+        message: 'Session has been invalidated due to suspected reuse. Please log in again.',
+      });
+    }
 
     const newAccessToken = this.tokenService.generateAccessToken({
       sub: session.user.id,
@@ -281,7 +328,7 @@ export class AuthService {
   /**
    * Logs out the user by revoking their current session
    */
-  async logout(rawRefreshToken?: string): Promise<void> {
+  async logout(userId: string, rawRefreshToken?: string): Promise<void> {
     if (!rawRefreshToken) {
       return;
     }
@@ -289,6 +336,7 @@ export class AuthService {
     const refreshTokenHash = this.tokenService.hashRefreshToken(rawRefreshToken);
     await this.prisma.session.updateMany({
       where: {
+        userId,
         refreshTokenHash,
         revokedAt: null,
       },

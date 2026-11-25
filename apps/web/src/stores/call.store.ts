@@ -12,10 +12,36 @@ import {
   CallAnswerPayload,
   CallIceCandidatePayload,
 } from '@chatterbox/shared';
+import { Socket } from 'socket.io-client';
 import { api } from '../lib/api';
 import { getSocket } from '../lib/socket';
 import { webrtcManager } from '../lib/webrtcManager';
 import { startRingtone, stopRingtone } from '../lib/ringtone';
+
+function emitWithAck<T = any>(
+  socket: Socket,
+  event: string,
+  payload: unknown,
+  timeoutMs = 15000,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('Call request timed out. Please try again.'));
+      }
+    }, timeoutMs);
+
+    socket.emit(event, payload, (response: T) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(response);
+      }
+    });
+  });
+}
 
 export type CallStatusState = 'idle' | 'outgoing' | 'incoming' | 'connecting' | 'active';
 
@@ -221,15 +247,17 @@ export const useCallStore = create<CallState>((set, get) => ({
    * Initiates a 1:1 call from a DM.
    */
   initiateCall: async (conversationId: string, type: CallType) => {
+    if (get().status !== 'idle') return;
+
     const socket = getSocket();
     if (!socket?.connected) {
-      set({ callError: 'Unable to start call: Chat server disconnected' });
+      set({ callError: 'Unable to start call: Chat server disconnected. Please reconnect and try again.' });
+      setTimeout(() => set({ callError: null }), 5000);
       return;
     }
 
     try {
       set({
-        status: 'outgoing',
         callError: null,
         isMuted: false,
         isCameraOff: false,
@@ -237,34 +265,10 @@ export const useCallStore = create<CallState>((set, get) => ({
         isMinimized: false,
       });
 
-      // 1. Fetch ICE servers
+      // 1. Fetch ICE servers first
       const { iceServers } = await api.getIceServers();
 
-      // 2. Acquire local media
-      const localStream = await webrtcManager.acquireLocalMedia(type);
-      set({ localStream });
-
-      // 3. Emit initiate call to API
-      const res: any = await new Promise((resolve) => {
-        socket.emit(SocketEvents.CALL_INITIATE, { conversationId, type }, resolve);
-      });
-
-      if (!res.ok) {
-        // Adjustment 3: Clean up media immediately on busy or failure
-        webrtcManager.cleanup();
-        set({
-          status: 'idle',
-          activeCall: null,
-          localStream: null,
-          callError: res.busy ? 'User is busy in another call' : res.error || 'Failed to start call',
-        });
-        setTimeout(() => set({ callError: null }), 4000);
-        return;
-      }
-
-      set({ activeCall: res.call });
-
-      // 4. Initialize PeerConnection and attach callbacks
+      // 2. Initialize PeerConnection and callbacks BEFORE acquiring local media so tracks attach cleanly
       webrtcManager.setCallbacks({
         onRemoteStream: (remoteStream) => {
           set({ remoteStream });
@@ -280,8 +284,37 @@ export const useCallStore = create<CallState>((set, get) => ({
           set({ isScreenSharing: false });
         },
       });
+      webrtcManager.initConnection('pending', iceServers);
 
-      webrtcManager.initConnection(res.call.id, iceServers);
+      // 3. Acquire local media (attaches tracks to initialized PeerConnection)
+      const localStream = await webrtcManager.acquireLocalMedia(type);
+      set({
+        status: 'outgoing',
+        localStream,
+      });
+
+      // 4. Emit initiate call to API with ack timeout
+      const res = await emitWithAck<{ ok?: boolean; busy?: boolean; error?: string; call?: CallItem }>(
+        socket,
+        SocketEvents.CALL_INITIATE,
+        { conversationId, type },
+      );
+
+      if (!res?.ok || !res.call) {
+        // Clean up media immediately on busy or failure
+        webrtcManager.cleanup();
+        set({
+          status: 'idle',
+          activeCall: null,
+          localStream: null,
+          callError: res?.busy ? 'User is currently busy in another call' : res?.error || 'Failed to start call',
+        });
+        setTimeout(() => set({ callError: null }), 5000);
+        return;
+      }
+
+      webrtcManager.setCallId(res.call.id);
+      set({ activeCall: res.call });
     } catch (err: any) {
       webrtcManager.cleanup();
       set({
@@ -290,13 +323,13 @@ export const useCallStore = create<CallState>((set, get) => ({
         localStream: null,
         callError: err.message || 'Failed to start call',
       });
-      setTimeout(() => set({ callError: null }), 4000);
+      setTimeout(() => set({ callError: null }), 6000);
     }
   },
 
   /**
    * Accepts an incoming ringing call.
-   * Adjustment 1: Fetch ICE servers, acquire local media, and init PC BEFORE emitting call:accept.
+   * Fetch ICE servers, init PeerConnection, and acquire local media BEFORE emitting call:accept.
    */
   acceptIncomingCall: async () => {
     stopRingtone();
@@ -314,11 +347,7 @@ export const useCallStore = create<CallState>((set, get) => ({
       // 1. Fetch ICE servers
       const { iceServers } = await api.getIceServers();
 
-      // 2. Acquire local media
-      const localStream = await webrtcManager.acquireLocalMedia(activeCall.type);
-      set({ localStream });
-
-      // 3. Initialize RTCPeerConnection and bind local stream
+      // 2. Initialize RTCPeerConnection and callbacks BEFORE acquiring local media
       webrtcManager.setCallbacks({
         onRemoteStream: (remoteStream) => {
           set({ remoteStream });
@@ -332,16 +361,21 @@ export const useCallStore = create<CallState>((set, get) => ({
           set({ isScreenSharing: false });
         },
       });
-
       webrtcManager.initConnection(activeCall.id, iceServers);
 
-      // 4. Emit call:accept to API now that callee is ready
-      const ack: any = await new Promise((resolve) => {
-        socket.emit(SocketEvents.CALL_ACCEPT, { callId: activeCall.id }, resolve);
-      });
+      // 3. Acquire local media (attaches tracks to PeerConnection)
+      const localStream = await webrtcManager.acquireLocalMedia(activeCall.type);
+      set({ localStream });
 
-      if (!ack.ok) {
-        throw new Error(ack.error || 'Failed to accept call');
+      // 4. Emit call:accept to API now that callee is ready
+      const ack = await emitWithAck<{ ok?: boolean; error?: string }>(
+        socket,
+        SocketEvents.CALL_ACCEPT,
+        { callId: activeCall.id },
+      );
+
+      if (!ack?.ok) {
+        throw new Error(ack?.error || 'Failed to accept call');
       }
     } catch (err: any) {
       stopRingtone();

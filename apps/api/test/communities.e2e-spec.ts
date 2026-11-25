@@ -389,6 +389,35 @@ describe('Communities, Channels, Invites & RBAC Module (REST + Socket E2E)', () 
       expect(roleRes.body.error.message).toContain('OWNER');
     });
 
+    it('MEMBER or Stranger cannot PATCH channel (403 Forbidden)', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/channels/${generalChannelId}`)
+        .set('Authorization', `Bearer ${tokenMember}`)
+        .send({ topic: 'Hacked by member' })
+        .expect(403);
+
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('MEMBER or Stranger cannot DELETE channel (403 Forbidden)', async () => {
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/channels/${announcementChannelId}`)
+        .set('Authorization', `Bearer ${tokenMember}`)
+        .expect(403);
+
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('ADMIN can PATCH channel (200 OK)', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/channels/${announcementChannelId}`)
+        .set('Authorization', `Bearer ${tokenAdmin}`)
+        .send({ topic: 'Updated announcements topic' })
+        .expect(200);
+
+      expect(res.body.data.topic).toBe('Updated announcements topic');
+    });
+
     it('MODERATOR can soft-delete a message from another member', async () => {
       // Member sends a message in #general
       const msgRes = await request(app.getHttpServer())

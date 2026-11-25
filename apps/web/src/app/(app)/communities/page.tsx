@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useState, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useCommunityStore } from '../../../stores/community.store';
 import { ServerRail } from '../../../components/communities/ServerRail';
@@ -14,6 +14,9 @@ import { CommunitySettingsModal } from '../../../components/communities/Communit
 import { ChannelItem } from '@chatterbox/shared';
 import { Button } from '../../../components/ui/Button';
 import { Users2, Compass, Plus, Loader2 } from 'lucide-react';
+
+const EMPTY_CHANNELS: ChannelItem[] = [];
+const EMPTY_MESSAGES: any[] = [];
 
 function CommunitiesWorkspaceContent() {
   const router = useRouter();
@@ -46,50 +49,94 @@ function CommunitiesWorkspaceContent() {
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
   const [channelToEdit, setChannelToEdit] = useState<ChannelItem | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [communitiesError, setCommunitiesError] = useState<string | null>(null);
 
   // Initial load & socket binding
   useEffect(() => {
     initSocketListeners();
-    fetchMyCommunities();
+    fetchMyCommunities().catch((err: any) => {
+      setCommunitiesError(err?.message || 'Failed to load communities.');
+    });
 
     return () => {
-      // Adjustment #3: Emit channel:leave & clean socket listeners on unmount
+      // Emit channel:leave & clean socket listeners on unmount
       cleanupSocketListeners();
     };
-  }, []);
+  }, [initSocketListeners, fetchMyCommunities, cleanupSocketListeners]);
 
-  // Sync searchParams with store selection
+  // Synchronize ?c=<id> and ?ch=<id> query params with store without fighting router.replace
+  const pendingNavRef = useRef<{ c: string | null; ch: string | null } | null>(null);
+
   useEffect(() => {
-    if (communities.length === 0) return;
+    if (pendingNavRef.current) {
+      const target = pendingNavRef.current;
+      if (
+        queryCommunityId === target.c &&
+        (target.ch === null || queryChannelId === target.ch)
+      ) {
+        pendingNavRef.current = null;
+      } else {
+        return;
+      }
+    }
+
+    const currentCommunityId = useCommunityStore.getState().activeCommunityId;
+    const currentChannelId = useCommunityStore.getState().activeChannelId;
 
     if (queryCommunityId) {
-      if (queryCommunityId !== activeCommunityId) {
-        selectCommunity(queryCommunityId, queryChannelId || undefined);
-      } else if (queryChannelId && queryChannelId !== activeChannelId) {
-        selectChannel(queryChannelId);
+      if (queryCommunityId !== currentCommunityId) {
+        selectCommunity(queryCommunityId, queryChannelId || undefined).catch((err: any) => {
+          setCommunitiesError(err?.message || 'Failed to load community.');
+        });
+      } else if (queryChannelId && queryChannelId !== currentChannelId) {
+        selectChannel(queryChannelId).catch((err: any) => {
+          setCommunitiesError(err?.message || 'Failed to load channel messages.');
+        });
       }
-    } else if (!activeCommunityId && communities.length > 0) {
-      // Auto-select first community if none in URL
+    } else if (communities.length > 0 && !currentCommunityId && !isLoadingCommunities) {
       const first = communities[0];
-      router.replace(`/communities?c=${first.id}`);
+      pendingNavRef.current = { c: first.id, ch: null };
+      selectCommunity(first.id).catch((err: any) => {
+        setCommunitiesError(err?.message || 'Failed to load community.');
+      });
+      router.replace(`/communities?c=${first.id}`, { scroll: false });
     }
-  }, [communities, queryCommunityId, queryChannelId, activeCommunityId, activeChannelId]);
+  }, [
+    queryCommunityId,
+    queryChannelId,
+    communities,
+    isLoadingCommunities,
+    selectCommunity,
+    selectChannel,
+    router,
+  ]);
 
   const handleSelectCommunity = (commId: string) => {
-    router.push(`/communities?c=${commId}`);
+    pendingNavRef.current = { c: commId, ch: null };
+    selectCommunity(commId).catch((err: any) => {
+      setCommunitiesError(err?.message || 'Failed to load community.');
+    });
+    router.replace(`/communities?c=${commId}`, { scroll: false });
   };
 
   const handleSelectChannel = (channelId: string) => {
-    if (activeCommunityId) {
-      router.push(`/communities?c=${activeCommunityId}&ch=${channelId}`);
+    const currentCommId = useCommunityStore.getState().activeCommunityId;
+    if (currentCommId) {
+      pendingNavRef.current = { c: currentCommId, ch: channelId };
+    }
+    selectChannel(channelId).catch((err: any) => {
+      setCommunitiesError(err?.message || 'Failed to load channel messages.');
+    });
+    if (currentCommId) {
+      router.replace(`/communities?c=${currentCommId}&ch=${channelId}`, { scroll: false });
     }
   };
 
   const activeChannel = activeCommunityDetail?.channels?.find((c) => c.id === activeChannelId);
-  const currentMessages = activeChannelId ? messagesByChannelId[activeChannelId] || [] : [];
+  const currentMessages = activeChannelId ? messagesByChannelId[activeChannelId] || EMPTY_MESSAGES : EMPTY_MESSAGES;
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] w-full overflow-hidden bg-background">
+    <div className="flex h-full w-full overflow-hidden bg-canvas">
       {/* 1. Server Rail (64px) */}
       <ServerRail
         communities={communities}
@@ -99,7 +146,23 @@ function CommunitiesWorkspaceContent() {
       />
 
       {/* Main Workspace Body */}
-      {isLoadingCommunities && communities.length === 0 ? (
+      {communitiesError && communities.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+          <p className="text-sm font-semibold text-status-busy mb-2">{communitiesError}</p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setCommunitiesError(null);
+              fetchMyCommunities().catch((err: any) => {
+                setCommunitiesError(err?.message || 'Failed to load communities.');
+              });
+            }}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : isLoadingCommunities && communities.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center">
           <Loader2 className="w-8 h-8 text-accent animate-spin mb-3" />
           <p className="text-xs text-secondary">Loading your communities...</p>

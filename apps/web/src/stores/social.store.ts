@@ -25,7 +25,11 @@ interface SocialState {
   fetchOlderFeed: (tab?: 'following' | 'explore') => Promise<void>;
   createPost: (dto: CreatePostDto) => Promise<PostItem>;
   deletePost: (postId: string) => Promise<void>;
-  toggleLike: (postId: string) => Promise<void>;
+  toggleLike: (
+    postId: string,
+    fallbackCurrentLiked?: boolean,
+    fallbackLikesCount?: number,
+  ) => Promise<{ isLiked: boolean; likesCount: number }>;
   prependPost: (post: PostItem) => void;
   updatePostInFeeds: (post: PostItem) => void;
 
@@ -162,47 +166,62 @@ export const useSocialStore = create<SocialState>((set, get) => ({
     }));
   },
 
-  toggleLike: async (postId) => {
+  toggleLike: async (postId, fallbackCurrentLiked, fallbackLikesCount) => {
     const { postsByTab } = get();
     // Locate post in either tab
-    let post = postsByTab.following.find((p) => p.id === postId) || postsByTab.explore.find((p) => p.id === postId);
-    if (!post) return;
+    const post =
+      postsByTab.following.find((p) => p.id === postId) ||
+      postsByTab.explore.find((p) => p.id === postId);
 
-    const previousLiked = post.isLiked;
-    const previousLikesCount = post.likesCount;
+    const previousLiked = post ? post.isLiked : Boolean(fallbackCurrentLiked);
+    const previousLikesCount = post ? post.likesCount : (fallbackLikesCount ?? 0);
     const nextLiked = !previousLiked;
     const nextLikesCount = nextLiked ? previousLikesCount + 1 : Math.max(0, previousLikesCount - 1);
 
-    // Optimistic update
-    set((state) => ({
-      postsByTab: {
-        following: state.postsByTab.following.map((p) =>
-          p.id === postId ? { ...p, isLiked: nextLiked, likesCount: nextLikesCount } : p,
-        ),
-        explore: state.postsByTab.explore.map((p) =>
-          p.id === postId ? { ...p, isLiked: nextLiked, likesCount: nextLikesCount } : p,
-        ),
-      },
-    }));
-
-    try {
-      if (nextLiked) {
-        await api.likePost(postId);
-      } else {
-        await api.unlikePost(postId);
-      }
-    } catch {
-      // Revert on failure
+    // Optimistic update if present in feed cache
+    if (post) {
       set((state) => ({
         postsByTab: {
           following: state.postsByTab.following.map((p) =>
-            p.id === postId ? { ...p, isLiked: previousLiked, likesCount: previousLikesCount } : p,
+            p.id === postId ? { ...p, isLiked: nextLiked, likesCount: nextLikesCount } : p,
           ),
           explore: state.postsByTab.explore.map((p) =>
-            p.id === postId ? { ...p, isLiked: previousLiked, likesCount: previousLikesCount } : p,
+            p.id === postId ? { ...p, isLiked: nextLiked, likesCount: nextLikesCount } : p,
           ),
         },
       }));
+    }
+
+    try {
+      const res = nextLiked ? await api.likePost(postId) : await api.unlikePost(postId);
+      if (post) {
+        set((state) => ({
+          postsByTab: {
+            following: state.postsByTab.following.map((p) =>
+              p.id === postId ? { ...p, isLiked: res.isLiked, likesCount: res.likesCount } : p,
+            ),
+            explore: state.postsByTab.explore.map((p) =>
+              p.id === postId ? { ...p, isLiked: res.isLiked, likesCount: res.likesCount } : p,
+            ),
+          },
+        }));
+      }
+      return { isLiked: res.isLiked, likesCount: res.likesCount };
+    } catch (err) {
+      // Revert on failure
+      if (post) {
+        set((state) => ({
+          postsByTab: {
+            following: state.postsByTab.following.map((p) =>
+              p.id === postId ? { ...p, isLiked: previousLiked, likesCount: previousLikesCount } : p,
+            ),
+            explore: state.postsByTab.explore.map((p) =>
+              p.id === postId ? { ...p, isLiked: previousLiked, likesCount: previousLikesCount } : p,
+            ),
+          },
+        }));
+      }
+      throw err;
     }
   },
 

@@ -10,7 +10,7 @@ import {
 } from '@chatterbox/shared';
 import { useCommunityStore } from '../../stores/community.store';
 import { useAuthStore } from '../../stores/auth.store';
-import { api } from '../../lib/api';
+import { api, uploadMediaWithFallback } from '../../lib/api';
 import { AttachmentList } from '../chat/AttachmentList';
 import { Button } from '../ui/Button';
 import {
@@ -37,6 +37,8 @@ interface ChannelChatAreaProps {
   isMembersOpen: boolean;
 }
 
+const EMPTY_TYPING: { userId: string; displayName: string }[] = [];
+
 export const ChannelChatArea: React.FC<ChannelChatAreaProps> = ({
   community,
   channel,
@@ -52,7 +54,9 @@ export const ChannelChatArea: React.FC<ChannelChatAreaProps> = ({
   const editMessage = useCommunityStore((s) => s.editMessage);
   const deleteMessage = useCommunityStore((s) => s.deleteMessage);
   const emitTyping = useCommunityStore((s) => s.emitTyping);
-  const typingUsers = useCommunityStore((s) => s.typingByChannelId[channel.id] || []);
+  const typingUsers = useCommunityStore(
+    (s) => s.typingByChannelId[channel.id] || EMPTY_TYPING,
+  );
 
   const [text, setText] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -99,14 +103,12 @@ export const ChannelChatArea: React.FC<ChannelChatAreaProps> = ({
           sizeBytes: file.size,
         });
 
-        // 2. Direct PUT to S3 / RustFS
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', presign.uploadUrl);
-          xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-          xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error('S3 upload failed')));
-          xhr.onerror = () => reject(new Error('Network error uploading to S3'));
-          xhr.send(file);
+        // 2. Upload directly to S3 with automatic authenticated API relay fallback
+        await uploadMediaWithFallback({
+          attachmentId: presign.attachmentId,
+          uploadUrl: presign.uploadUrl,
+          file,
+          contentType: file.type || 'application/octet-stream',
         });
 
         // 3. Confirm upload
@@ -201,7 +203,7 @@ export const ChannelChatArea: React.FC<ChannelChatAreaProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-background overflow-hidden relative">
+    <div className="flex-1 flex flex-col min-w-0 bg-canvas overflow-hidden relative">
       {/* Top Channel Bar */}
       <div className="h-14 px-4 border-b border-border flex items-center justify-between shrink-0 bg-surface/30">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -405,7 +407,7 @@ export const ChannelChatArea: React.FC<ChannelChatAreaProps> = ({
 
       {/* Typing Indicator Footer */}
       {typingUsers.length > 0 && (
-        <div className="px-4 py-1 text-[11px] text-accent-bright flex items-center gap-1.5 shrink-0 bg-background/80">
+        <div className="px-4 py-1 text-[11px] text-accent-bright flex items-center gap-1.5 shrink-0 bg-canvas/80">
           <span className="inline-flex gap-1 items-center">
             <span className="w-1.5 h-1.5 rounded-full bg-accent-bright animate-bounce" />
             <span className="w-1.5 h-1.5 rounded-full bg-accent-bright animate-bounce [animation-delay:0.2s]" />
@@ -422,7 +424,7 @@ export const ChannelChatArea: React.FC<ChannelChatAreaProps> = ({
         {!canPostInChannel ? (
           /* Honest Announcement Read-Only Banner */
           <div className="p-3.5 rounded-xl bg-elevated/40 border border-border flex items-center justify-center gap-2 text-xs text-secondary text-center">
-            <ShieldAlert className="w-4 h-4 text-status-warning shrink-0" />
+            <ShieldAlert className="w-4 h-4 text-status-away shrink-0" />
             <span>Only administrators and moderators can post announcements in this channel.</span>
           </div>
         ) : (

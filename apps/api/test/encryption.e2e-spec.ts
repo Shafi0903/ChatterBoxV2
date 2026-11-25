@@ -54,6 +54,7 @@ describe('Encryption & E2EE Module (REST E2E)', () => {
   let bobDeviceId: string;
 
   let dmConversationId: string;
+  let sampleEncryptedHeader: any;
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
@@ -96,14 +97,29 @@ describe('Encryption & E2EE Module (REST E2E)', () => {
     // Generate real WebCrypto key pairs for Alice
     aliceIdentityKey = await generateIdentityKeyPair();
     aliceSigningKey = await generateSigningKeyPair();
-    aliceSignedPreKey = await generateSignedPreKey(aliceSigningKey.privateKey);
+    aliceSignedPreKey = await generateSignedPreKey(
+      aliceSigningKey.privateKey,
+      await exportJwk(aliceIdentityKey.publicKey),
+    );
     alicePreKeys = await generateOneTimePreKeys(5, 1);
 
     // Generate real WebCrypto key pairs for Bob
     bobIdentityKey = await generateIdentityKeyPair();
     bobSigningKey = await generateSigningKeyPair();
-    bobSignedPreKey = await generateSignedPreKey(bobSigningKey.privateKey);
+    bobSignedPreKey = await generateSignedPreKey(
+      bobSigningKey.privateKey,
+      await exportJwk(bobIdentityKey.publicKey),
+    );
     bobPreKeys = await generateOneTimePreKeys(5, 1);
+
+    // Create shared DM conversation between Alice and Bob so key fetching is authorized
+    const resDm = await request(app.getHttpServer())
+      .post('/api/v1/conversations/dm')
+      .set('Authorization', `Bearer ${tokenAlice}`)
+      .send({ targetUserId: idBob })
+      .expect(201);
+
+    dmConversationId = resDm.body.data.id;
   });
 
   afterAll(async () => {
@@ -272,9 +288,9 @@ describe('Encryption & E2EE Module (REST E2E)', () => {
       const resDm = await request(app.getHttpServer())
         .post('/api/v1/conversations/dm')
         .set('Authorization', `Bearer ${tokenAlice}`)
-        .send({ targetUserId: idBob })
-        .expect(201);
+        .send({ targetUserId: idBob });
 
+      expect([200, 201]).toContain(resDm.status);
       dmConversationId = resDm.body.data.id;
       expect(resDm.body.data.isEncrypted).toBe(false);
     });
@@ -358,6 +374,8 @@ describe('Encryption & E2EE Module (REST E2E)', () => {
           },
         ],
       });
+
+      sampleEncryptedHeader = encrypted.e2eeHeader;
 
       // 3. Send encrypted message to server
       const sendRes = await request(app.getHttpServer())
@@ -500,12 +518,7 @@ describe('Encryption & E2EE Module (REST E2E)', () => {
           content: 'some ciphertext',
           isEncrypted: true,
           senderDeviceId: aliceDeviceId,
-          e2eeHeader: {
-            version: 1,
-            ephemeralPublicKey: '{}',
-            iv: 'dGVzdA==',
-            devices: {},
-          },
+          e2eeHeader: sampleEncryptedHeader,
         });
 
       expect(res.status).toBe(400);

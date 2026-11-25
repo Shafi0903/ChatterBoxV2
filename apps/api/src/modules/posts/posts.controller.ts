@@ -10,6 +10,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { z } from 'zod';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
@@ -21,34 +22,46 @@ import {
 } from '@chatterbox/shared';
 import { PostsService } from './posts.service';
 
+const feedQuerySchema = z.object({
+  tab: z.enum(['following', 'explore']).optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
+
+const postListQuerySchema = z.object({
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
+
 @Controller('posts')
 @UseGuards(JwtAuthGuard)
 export class PostsController {
   constructor(private readonly postsService: PostsService) {}
 
   /**
-   * Adjustment #4: Static routes MUST be declared strictly above parameterized :id routes
+   * Static routes MUST be declared strictly above parameterized :id routes
    */
   @Get('feed')
   async getFeed(
     @CurrentUser('userId') callerId: string,
-    @Query('tab') tab?: 'following' | 'explore',
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(feedQuerySchema)) query: z.infer<typeof feedQuerySchema>,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    return this.postsService.getFeed(callerId, tab || 'following', cursor, parsedLimit);
+    return this.postsService.getFeed(
+      callerId,
+      query.tab || 'following',
+      query.cursor,
+      query.limit ?? 20,
+    );
   }
 
   @Get('user/:userId')
   async getUserPosts(
     @CurrentUser('userId') callerId: string,
     @Param('userId') userId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(postListQuerySchema))
+    query: z.infer<typeof postListQuerySchema>,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    return this.postsService.getUserPosts(callerId, userId, cursor, parsedLimit);
+    return this.postsService.getUserPosts(callerId, userId, query.cursor, query.limit ?? 20);
   }
 
   @Delete('comments/:commentId')
@@ -108,11 +121,10 @@ export class PostsController {
   async getComments(
     @CurrentUser('userId') callerId: string,
     @Param('id') postId: string,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
+    @Query(new ZodValidationPipe(postListQuerySchema))
+    query: z.infer<typeof postListQuerySchema>,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    return this.postsService.getComments(callerId, postId, cursor, parsedLimit);
+    return this.postsService.getComments(callerId, postId, query.cursor, query.limit ?? 20);
   }
 
   @Post(':id/comments')

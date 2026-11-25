@@ -48,9 +48,25 @@ export const MembersPanel: React.FC<MembersPanelProps> = ({ community, isOpen, o
     setIsUpdating(true);
     try {
       await api.updateMemberRole(community.id, targetUserId, { role: newRole });
-      await selectCommunity(community.id);
+      await selectCommunity(community.id, undefined, true);
     } catch (err: any) {
       alert(err.message || 'Failed to update member role');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleTransferOwnership = async (targetMember: CommunityMemberItem) => {
+    setActiveMenuMemberId(null);
+    if (!confirm(`Are you sure you want to transfer Community Ownership of ${community.name} to ${targetMember.displayName} (@${targetMember.username})? You will become an Admin.`)) {
+      return;
+    }
+    setIsUpdating(true);
+    try {
+      await api.transferCommunityOwnership(community.id, targetMember.userId);
+      await selectCommunity(community.id, undefined, true);
+    } catch (err: any) {
+      alert(err.message || 'Failed to transfer ownership');
     } finally {
       setIsUpdating(false);
     }
@@ -62,7 +78,7 @@ export const MembersPanel: React.FC<MembersPanelProps> = ({ community, isOpen, o
       setIsUpdating(true);
       try {
         await api.kickMember(community.id, targetMember.userId);
-        await selectCommunity(community.id);
+        await selectCommunity(community.id, undefined, true);
       } catch (err: any) {
         alert(err.message || 'Failed to kick member');
       } finally {
@@ -101,7 +117,7 @@ export const MembersPanel: React.FC<MembersPanelProps> = ({ community, isOpen, o
           <div className="min-w-0">
             <div className="text-xs font-semibold text-primary truncate flex items-center gap-1.5">
               <span>{member.displayName}</span>
-              {member.role === 'OWNER' && <Crown className="w-3 h-3 text-status-warning shrink-0" />}
+              {member.role === 'OWNER' && <Crown className="w-3 h-3 text-status-away shrink-0" />}
               {member.role === 'ADMIN' && <ShieldCheck className="w-3 h-3 text-accent-bright shrink-0" />}
               {member.role === 'MODERATOR' && <Shield className="w-3 h-3 text-status-online shrink-0" />}
             </div>
@@ -132,6 +148,17 @@ export const MembersPanel: React.FC<MembersPanelProps> = ({ community, isOpen, o
                   <div className="px-2 py-1 text-[10px] font-bold text-secondary uppercase tracking-wider">
                     Change Role
                   </div>
+
+                  {callerRole === 'OWNER' && member.role !== 'OWNER' && (
+                    <button
+                      type="button"
+                      onClick={() => handleTransferOwnership(member)}
+                      className="w-full px-2 py-1.5 text-left text-status-away hover:bg-status-away/15 rounded-md flex items-center gap-1.5 font-semibold"
+                    >
+                      <Crown className="w-3.5 h-3.5 text-status-away" />
+                      Transfer Ownership
+                    </button>
+                  )}
 
                   {callerRank > ROLE_PRIORITY['ADMIN'] && member.role !== 'ADMIN' && (
                     <button

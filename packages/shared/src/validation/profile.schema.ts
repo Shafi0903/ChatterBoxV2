@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { safeHttpUrlSchema } from './url.schema';
 
 export const updateProfileSchema = z.object({
   displayName: z
@@ -12,14 +13,10 @@ export const updateProfileSchema = z.object({
     .max(280, 'Bio must be at most 280 characters')
     .nullable()
     .optional(),
-  avatarUrl: z
-    .string()
-    .url('Avatar URL must be a valid URL')
+  avatarUrl: safeHttpUrlSchema('Avatar URL must be a valid http or https URL')
     .nullable()
     .optional(),
-  bannerUrl: z
-    .string()
-    .url('Banner URL must be a valid URL')
+  bannerUrl: safeHttpUrlSchema('Banner URL must be a valid http or https URL')
     .nullable()
     .optional(),
   location: z

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useEffect } from 'react';
+import React, { Suspense, useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useChatStore } from '../../../stores/chat.store';
 import { ConversationList } from '../../../components/chat/ConversationList';
@@ -21,20 +21,37 @@ function MessagesWorkspace() {
   } = useChatStore();
 
   const queryConversationId = searchParams.get('c');
+  const pendingUrlTargetRef = useRef<string | null | undefined>(undefined);
+  const prevQueryRef = useRef<string | null>(null);
 
-  // Synchronize ?c=<id> query param on load
+  // Synchronize ?c=<id> query param -> store without fighting in-flight router.replace calls
   useEffect(() => {
-    if (queryConversationId && queryConversationId !== activeConversationId) {
-      selectConversation(queryConversationId);
+    const prevQuery = prevQueryRef.current;
+    prevQueryRef.current = queryConversationId;
+
+    if (pendingUrlTargetRef.current !== undefined) {
+      if (queryConversationId === pendingUrlTargetRef.current) {
+        pendingUrlTargetRef.current = undefined;
+      }
+      return;
     }
-  }, [queryConversationId, activeConversationId, selectConversation]);
+
+    const currentActiveId = useChatStore.getState().activeConversationId;
+    if (queryConversationId && queryConversationId !== currentActiveId) {
+      selectConversation(queryConversationId);
+    } else if (!queryConversationId && prevQuery && currentActiveId) {
+      selectConversation(null);
+    }
+  }, [queryConversationId, selectConversation]);
 
   const handleSelectConversation = (id: string) => {
+    pendingUrlTargetRef.current = id;
     selectConversation(id);
     router.replace(`/messages?c=${id}`, { scroll: false });
   };
 
   const handleBackToConversations = () => {
+    pendingUrlTargetRef.current = null;
     selectConversation(null);
     router.replace('/messages', { scroll: false });
   };

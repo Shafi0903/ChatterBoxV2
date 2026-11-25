@@ -25,10 +25,11 @@ import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { parseDurationMs } from '../../config/jwt-secret.util';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const REFRESH_COOKIE_PATH = '/api/v1/auth';
-const REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
+const DEFAULT_REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 @Controller('auth')
 export class AuthController {
@@ -81,6 +82,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(
@@ -101,14 +103,16 @@ export class AuthController {
     };
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(
+    @CurrentUser('userId') userId: string,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
-    await this.authService.logout(rawRefreshToken);
+    await this.authService.logout(userId, rawRefreshToken);
     this.clearRefreshTokenCookie(res);
   }
 
@@ -125,7 +129,7 @@ export class AuthController {
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: REFRESH_COOKIE_PATH,
-      maxAge: REFRESH_COOKIE_MAX_AGE,
+      maxAge: parseDurationMs(process.env.JWT_REFRESH_EXPIRES_IN, DEFAULT_REFRESH_COOKIE_MAX_AGE),
     });
   }
 

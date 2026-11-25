@@ -1,5 +1,18 @@
 import { z } from 'zod';
 
+export const RESERVED_USERNAMES = [
+  'admin',
+  'administrator',
+  'support',
+  'moderator',
+  'system',
+  'chatterbox',
+  'official',
+  'security',
+  'root',
+  'help',
+] as const;
+
 export const registerSchema = z.object({
   email: z
     .string()
@@ -15,7 +28,11 @@ export const registerSchema = z.object({
       'Username can only contain letters, numbers, and underscores',
     )
     .toLowerCase()
-    .trim(),
+    .trim()
+    .refine(
+      (val) => !RESERVED_USERNAMES.includes(val as any),
+      { message: 'This username is reserved and cannot be registered' },
+    ),
   displayName: z
     .string()
     .min(1, 'Display name cannot be empty')
@@ -24,7 +41,7 @@ export const registerSchema = z.object({
   password: z
     .string()
     .min(8, 'Password must be at least 8 characters')
-    .max(100, 'Password must be at most 100 characters'),
+    .max(128, 'Password must be at most 128 characters'),
 });
 
 export type RegisterDto = z.infer<typeof registerSchema>;
@@ -33,8 +50,12 @@ export const loginSchema = z.object({
   identifier: z
     .string()
     .min(1, 'Identifier (email or username) is required')
+    .max(100, 'Identifier too long')
     .trim(),
-  password: z.string().min(1, 'Password is required'),
+  password: z
+    .string()
+    .min(1, 'Password is required')
+    .max(128, 'Password too long'),
 });
 
 export type LoginDto = z.infer<typeof loginSchema>;

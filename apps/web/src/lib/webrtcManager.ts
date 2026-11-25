@@ -6,6 +6,7 @@ export class WebRTCManager {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
+  private activeVideoSender: RTCRtpSender | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private callId: string | null = null;
 
@@ -24,6 +25,13 @@ export class WebRTCManager {
   }
 
   /**
+   * Updates the active call ID once the server acknowledges call initiation.
+   */
+  public setCallId(callId: string): void {
+    this.callId = callId;
+  }
+
+  /**
    * Initializes RTCPeerConnection with configured ICE servers.
    */
   public initConnection(callId: string, iceServers: IceServerConfig[]): RTCPeerConnection {
@@ -31,8 +39,8 @@ export class WebRTCManager {
       throw new Error('WebRTC is only supported in browser environments');
     }
 
-    this.callId = callId;
     this.cleanup();
+    this.callId = callId;
 
     const config: RTCConfiguration = {
       iceServers: iceServers.length > 0 ? iceServers : [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -44,7 +52,7 @@ export class WebRTCManager {
 
     // ICE Candidate handler -> emit to server
     pc.onicecandidate = (event) => {
-      if (event.candidate && this.callId) {
+      if (event.candidate && this.callId && this.callId !== 'pending') {
         const socket = getSocket();
         if (socket?.connected) {
           socket.emit(SocketEvents.CALL_ICE_CANDIDATE, {
@@ -85,8 +93,24 @@ export class WebRTCManager {
    * Acquires local media stream according to call type.
    */
   public async acquireLocalMedia(type: CallType): Promise<MediaStream> {
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Media devices are not supported in this browser');
+    if (typeof window === 'undefined') {
+      throw new Error('WebRTC is only supported in browser environments');
+    }
+
+    if (
+      !window.isSecureContext &&
+      window.location.hostname !== 'localhost' &&
+      window.location.hostname !== '127.0.0.1'
+    ) {
+      throw new Error(
+        'Audio/Video calls require a secure HTTPS connection or localhost (browser WebRTC media constraint).'
+      );
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error(
+        'Camera and microphone access is unavailable in this browser or disabled under non-HTTPS origin.'
+      );
     }
 
     const constraints: MediaStreamConstraints = {
@@ -119,7 +143,7 @@ export class WebRTCManager {
       return stream;
     } catch (err: any) {
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        throw new Error('Microphone or Camera permission was denied. Please allow access in browser settings.');
+        throw new Error('Microphone or Camera permission was denied. Please allow access in your browser site permissions.');
       }
       if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         throw new Error('No compatible microphone or camera found on this device.');
@@ -257,24 +281,26 @@ export class WebRTCManager {
       video: true,
       audio: false,
     });
-    this.screenStream = screenStream;
 
     const screenTrack = screenStream.getVideoTracks()[0];
-    if (screenTrack && this.peerConnection) {
-      const senders = this.peerConnection.getSenders();
-      const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
+    const senders = this.peerConnection?.getSenders() || [];
+    const videoSender = senders.find((s) => s.track?.kind === 'video');
 
-      if (videoSender) {
-        await videoSender.replaceTrack(screenTrack);
-      }
-
-      screenTrack.onended = () => {
-        this.stopScreenShare();
-        if (this.onScreenShareEndedCb) {
-          this.onScreenShareEndedCb();
-        }
-      };
+    if (!screenTrack || !this.peerConnection || !videoSender) {
+      screenStream.getTracks().forEach((t) => t.stop());
+      throw new Error('Screen sharing requires an active video call.');
     }
+
+    this.screenStream = screenStream;
+    this.activeVideoSender = videoSender;
+    await videoSender.replaceTrack(screenTrack);
+
+    screenTrack.onended = () => {
+      this.stopScreenShare();
+      if (this.onScreenShareEndedCb) {
+        this.onScreenShareEndedCb();
+      }
+    };
 
     return screenStream;
   }
@@ -291,12 +317,15 @@ export class WebRTCManager {
     if (this.localStream && this.peerConnection) {
       const cameraTrack = this.localStream.getVideoTracks()[0];
       const senders = this.peerConnection.getSenders();
-      const videoSender = senders.find((s) => s.track?.kind === 'video' || (!s.track && cameraTrack));
+      const videoSender =
+        this.activeVideoSender ||
+        senders.find((s) => s.track?.kind === 'video');
 
       if (videoSender && cameraTrack) {
         await videoSender.replaceTrack(cameraTrack);
       }
     }
+    this.activeVideoSender = null;
   }
 
   /**
@@ -345,6 +374,7 @@ export class WebRTCManager {
     }
 
     this.pendingCandidates = [];
+    this.activeVideoSender = null;
     this.callId = null;
   }
 }

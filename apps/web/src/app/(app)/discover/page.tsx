@@ -28,14 +28,16 @@ export default function DiscoverPage() {
   const [communities, setCommunities] = useState<(CommunityItem & { isMember: boolean })[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isJoiningId, setIsJoiningId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const loadCommunities = async (searchQuery?: string) => {
     setIsLoading(true);
+    setError(null);
     try {
       const res = await api.discoverCommunities(searchQuery);
       setCommunities(res.data);
-    } catch (err) {
-      console.error('Failed to discover communities:', err);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load public communities.');
     } finally {
       setIsLoading(false);
     }
@@ -51,9 +53,14 @@ export default function DiscoverPage() {
   };
 
   const handleJoin = async (community: CommunityItem & { isMember: boolean }) => {
+    setError(null);
     if (community.isMember) {
-      await selectCommunity(community.id);
-      router.push(`/communities?c=${community.id}`);
+      try {
+        await selectCommunity(community.id);
+        router.push(`/communities?c=${community.id}`);
+      } catch (err: any) {
+        setError(err?.message || 'Failed to open community.');
+      }
       return;
     }
 
@@ -63,8 +70,8 @@ export default function DiscoverPage() {
       await fetchMyCommunities();
       await selectCommunity(community.id);
       router.push(`/communities?c=${community.id}`);
-    } catch (err) {
-      console.error('Failed to join community:', err);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to join community.');
     } finally {
       setIsJoiningId(null);
     }
@@ -73,7 +80,7 @@ export default function DiscoverPage() {
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       {/* Hero Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-linear-to-r from-accent/20 via-surface to-elevated border border-border p-8 mb-8 shadow-2xl">
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-accent/20 via-surface to-elevated border border-border p-8 mb-8 shadow-2xl">
         <div className="max-w-xl">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent/20 border border-accent/40 text-accent-bright text-xs font-semibold mb-3">
             <Compass className="w-3.5 h-3.5" />
@@ -106,6 +113,19 @@ export default function DiscoverPage() {
       </div>
 
       {/* Community Grid */}
+      {error && (
+        <div className="mb-6 p-3.5 rounded-2xl bg-status-busy/10 border border-status-busy/25 text-xs text-status-busy flex items-center justify-between gap-2">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => loadCommunities(query || undefined)}
+            className="font-semibold underline shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       <div className="mb-6 flex items-center justify-between">
         <h2 className="text-lg font-bold text-primary flex items-center gap-2">
           Featured Communities

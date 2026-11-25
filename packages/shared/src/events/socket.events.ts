@@ -1,5 +1,68 @@
+import { z } from 'zod';
 import { ConversationItem, PresenceStatus } from '../types/conversation.types';
 import { MessageItem } from '../types/message.types';
+import { E2eeHeader } from '../types/encryption.types';
+import { e2eeHeaderSchema } from '../validation/encryption.schema';
+
+export const conversationJoinSchema = z.object({
+  conversationId: z.string().min(1, 'conversationId is required'),
+});
+
+export const messageSendSchema = z.object({
+  conversationId: z.string().min(1, 'conversationId is required'),
+  clientMessageId: z.string().min(1, 'clientMessageId is required'),
+  content: z.string().max(4000).default(''),
+  replyToId: z.string().optional(),
+  attachmentIds: z.array(z.string().min(1)).optional(),
+  type: z.string().optional(),
+  isEncrypted: z.boolean().optional(),
+  senderDeviceId: z.string().optional(),
+  e2eeHeader: e2eeHeaderSchema.optional(),
+});
+
+export const messageDeliveredSchema = z.object({
+  conversationId: z.string().min(1, 'conversationId is required'),
+  messageId: z.string().min(1, 'messageId is required'),
+});
+
+export const messageReadSchema = z.object({
+  conversationId: z.string().min(1, 'conversationId is required'),
+  lastReadMessageId: z.string().min(1, 'lastReadMessageId is required'),
+});
+
+export const typingSchema = z.object({
+  conversationId: z.string().min(1, 'conversationId is required'),
+});
+
+export const channelJoinSchema = z.object({
+  channelId: z.string().min(1, 'channelId is required'),
+});
+
+export const channelLeaveSchema = z.object({
+  channelId: z.string().min(1, 'channelId is required'),
+});
+
+export const channelMessageSendSchema = z
+  .object({
+    channelId: z.string().min(1, 'channelId is required'),
+    clientMessageId: z.string().min(1, 'clientMessageId is required'),
+    content: z.string().max(4000).default(''),
+    replyToId: z.string().optional(),
+    attachmentIds: z.array(z.string().min(1)).max(10).optional(),
+  })
+  .refine(
+    (data) =>
+      (data.content && data.content.trim().length > 0) ||
+      (data.attachmentIds && data.attachmentIds.length > 0),
+    {
+      message: 'Message content cannot be empty unless attachments are provided',
+      path: ['content'],
+    },
+  );
+
+export const channelTypingSchema = z.object({
+  channelId: z.string().min(1, 'channelId is required'),
+});
 
 export const SocketEvents = {
   // Client -> Server
@@ -64,7 +127,7 @@ export interface MessageSendPayload {
   type?: string;
   isEncrypted?: boolean;
   senderDeviceId?: string;
-  e2eeHeader?: any;
+  e2eeHeader?: E2eeHeader;
 }
 
 export interface MessageDeliveredPayload {
@@ -83,7 +146,7 @@ export interface MessageUpdatedPayload {
   content: string;
   editedAt: string | Date;
   senderDeviceId?: string | null;
-  e2eeHeader?: any | null;
+  e2eeHeader?: E2eeHeader | null;
 }
 
 export interface MessageDeletedPayload {

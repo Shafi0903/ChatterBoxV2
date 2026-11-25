@@ -73,25 +73,31 @@ export function StoryViewerModal({ initialGroupIndex = 0, onClose }: StoryViewer
   }, [currentStoryIdx, currentGroupIdx, storyGroups]);
 
   // Handle media URL resolution
+  const storyId = story?.id;
+  const storyAttachmentId = story?.attachment?.id;
+  const storyHasViewed = story?.hasViewed;
+  const groupAuthorId = group?.author?.id;
+
   useEffect(() => {
     let active = true;
-    if (!story) return;
+    if (!storyId) return;
 
     setProgress(0);
     setShowViewersSheet(false);
 
-    if (story.attachment) {
+    if (storyAttachmentId) {
       setMediaLoading(true);
+      setMediaUrl(null);
       api
-        .getMediaDownloadUrl(story.attachment.id)
+        .getMediaDownloadUrl(storyAttachmentId)
         .then((res) => {
           if (active) {
-            setMediaUrl(res.downloadUrl);
+            setMediaUrl(res.proxyUrl || res.downloadUrl);
             setMediaLoading(false);
           }
         })
         .catch((err) => {
-          console.error('Failed to load story media download url', err);
+          console.error('Failed to load story media URL', err);
           if (active) {
             setMediaUrl(null);
             setMediaLoading(false);
@@ -103,15 +109,15 @@ export function StoryViewerModal({ initialGroupIndex = 0, onClose }: StoryViewer
     }
 
     // Mark viewed if not already
-    if (!story.hasViewed && user?.id !== group?.author?.id) {
-      api.markStoryViewed(story.id).catch(console.error);
-      markStoryViewedLocal(story.id);
+    if (!storyHasViewed && user?.id !== groupAuthorId) {
+      api.markStoryViewed(storyId).catch(console.error);
+      markStoryViewedLocal(storyId);
     }
 
     return () => {
       active = false;
     };
-  }, [story, user?.id, group?.author?.id, markStoryViewedLocal]);
+  }, [storyId, storyAttachmentId, storyHasViewed, user?.id, groupAuthorId, markStoryViewedLocal]);
 
   // Timer logic for image and text stories (5 seconds)
   useEffect(() => {
@@ -345,8 +351,8 @@ export function StoryViewerModal({ initialGroupIndex = 0, onClose }: StoryViewer
         <div className="relative flex-1 w-full h-full flex items-center justify-center overflow-hidden">
           {!story.attachment ? (
             <div
-              className={`w-full h-full p-8 flex items-center justify-center text-center ${
-                story.backgroundColor || 'bg-gradient-to-br from-indigo-900 to-purple-900'
+              className={`w-full h-full p-8 flex items-center justify-center text-center bg-gradient-to-br ${
+                story.backgroundColor || 'from-indigo-900 to-purple-900'
               }`}
             >
               <p className="text-white text-xl md:text-2xl font-bold break-words max-w-full drop-shadow-md">

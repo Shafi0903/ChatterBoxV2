@@ -246,7 +246,10 @@ describe('Notifications Module (REST E2E)', () => {
       // Set up E2EE devices for Alice and Bob
       const aliceSign = await generateSigningKeyPair();
       const aliceId = await generateIdentityKeyPair();
-      const aliceSignedPre = await generateSignedPreKey(aliceSign.privateKey);
+      const aliceSignedPre = await generateSignedPreKey(
+        aliceSign.privateKey,
+        await exportJwk(aliceId.publicKey),
+      );
       const aliceOneTime = await generateOneTimePreKeys(5, 1);
 
       const aliceDevRes = await request(app.getHttpServer())
@@ -267,7 +270,10 @@ describe('Notifications Module (REST E2E)', () => {
 
       const bobSign = await generateSigningKeyPair();
       const bobId = await generateIdentityKeyPair();
-      const bobSignedPre = await generateSignedPreKey(bobSign.privateKey);
+      const bobSignedPre = await generateSignedPreKey(
+        bobSign.privateKey,
+        await exportJwk(bobId.publicKey),
+      );
       const bobOneTime = await generateOneTimePreKeys(5, 1);
 
       const bobDevRes = await request(app.getHttpServer())

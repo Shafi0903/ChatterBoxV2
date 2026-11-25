@@ -61,7 +61,7 @@ export const ChannelSidebar: React.FC<ChannelSidebarProps> = ({
     if (confirm(`Delete #${channel.name}? All channel messages will be removed.`)) {
       try {
         await api.deleteChannel(channel.id);
-        await selectCommunity(community.id);
+        await selectCommunity(community.id, undefined, true);
       } catch (err: any) {
         alert(err.message || 'Failed to delete channel');
       }

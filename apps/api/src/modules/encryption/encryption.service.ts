@@ -3,12 +3,15 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   RegisterDeviceInput,
+  RotateSignedPreKeyInput,
   ReplenishPreKeysInput,
   verifySignedPreKey,
+  verifyDeviceBundle,
   isValidPublicJwkEC,
   computeSafetyNumber,
   UserKeyBundleResponse,
@@ -23,7 +26,6 @@ export class EncryptionService {
    * Register a new user device with identity, signing, signed prekey, and one-time prekeys
    */
   async registerDevice(userId: string, input: RegisterDeviceInput): Promise<DeviceSummary> {
-    // 1. Validate public JWK properties and ensure no private 'd' is present
     if (
       !isValidPublicJwkEC(input.identityKeyPublic) ||
       !isValidPublicJwkEC(input.signingKeyPublic) ||
@@ -38,44 +40,66 @@ export class EncryptionService {
       }
     }
 
-    // 2. Cryptographically verify signed pre-key signature using the device's public signing key
-    const isValidSignature = await verifySignedPreKey(
+    // Cryptographically enforce identityKeyPublic <-> signedPreKeyPublic binding
+    const isBoundPreKeySig = await verifySignedPreKey(
       input.signedPreKeyPublic,
       input.signedPreKeySignature,
-      input.signingKeyPublic
+      input.signingKeyPublic,
+      input.identityKeyPublic,
     );
 
-    if (!isValidSignature) {
-      throw new BadRequestException('Signed pre-key signature verification failed against signingKeyPublic');
+    if (!isBoundPreKeySig) {
+      throw new BadRequestException(
+        'Signed pre-key signature verification failed against signingKeyPublic and identityKeyPublic',
+      );
     }
 
-    // 3. Persist Device and OneTimePreKeys transactionally
-    const device = await this.prisma.$transaction(async (tx) => {
-      const createdDevice = await tx.device.create({
-        data: {
-          userId,
-          deviceName: input.deviceName,
-          identityKeyPublic: input.identityKeyPublic,
-          signingKeyPublic: input.signingKeyPublic,
-          signedPreKeyPublic: input.signedPreKeyPublic,
-          signedPreKeySignature: input.signedPreKeySignature,
-          lastActiveAt: new Date(),
-        },
-      });
-
-      // Insert prekeys
-      if (input.oneTimePreKeys.length > 0) {
-        await tx.oneTimePreKey.createMany({
-          data: input.oneTimePreKeys.map((otpk) => ({
-            deviceId: createdDevice.id,
-            keyId: otpk.keyId,
-            publicKey: otpk.publicKey,
-          })),
-        });
+    if (input.identityBindingSignature) {
+      const isBindingValid = await verifyDeviceBundle(
+        input.identityKeyPublic,
+        input.signedPreKeyPublic,
+        input.identityBindingSignature,
+        input.signingKeyPublic,
+      );
+      if (!isBindingValid) {
+        throw new BadRequestException('Identity binding signature verification failed');
       }
+    }
 
-      return createdDevice;
-    });
+    let device;
+    try {
+      device = await this.prisma.$transaction(async (tx) => {
+        const createdDevice = await tx.device.create({
+          data: {
+            userId,
+            deviceName: input.deviceName,
+            identityKeyPublic: input.identityKeyPublic,
+            signingKeyPublic: input.signingKeyPublic,
+            signedPreKeyPublic: input.signedPreKeyPublic,
+            signedPreKeySignature: input.signedPreKeySignature,
+            lastActiveAt: new Date(),
+          },
+        });
+
+        if (input.oneTimePreKeys.length > 0) {
+          await tx.oneTimePreKey.createMany({
+            data: input.oneTimePreKeys.map((otpk) => ({
+              deviceId: createdDevice.id,
+              keyId: otpk.keyId,
+              publicKey: otpk.publicKey,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        return createdDevice;
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        throw new ConflictException('Duplicate device or prekey identifier detected');
+      }
+      throw err;
+    }
 
     const remainingPreKeys = await this.prisma.oneTimePreKey.count({
       where: { deviceId: device.id, consumedAt: null },
@@ -92,6 +116,89 @@ export class EncryptionService {
       lastActiveAt: device.lastActiveAt,
       revokedAt: device.revokedAt,
       createdAt: device.createdAt,
+    };
+  }
+
+  /**
+   * Rotate signed prekey for an active device owned by userId
+   */
+  async rotateSignedPreKey(
+    userId: string,
+    deviceId: string,
+    input: RotateSignedPreKeyInput,
+  ): Promise<DeviceSummary> {
+    if (!isValidPublicJwkEC(input.signedPreKeyPublic)) {
+      throw new BadRequestException('Invalid signed pre-key public JWK');
+    }
+
+    const device = await this.prisma.device.findUnique({
+      where: { id: deviceId },
+    });
+
+    if (!device) {
+      throw new NotFoundException('Device not found');
+    }
+
+    if (device.userId !== userId) {
+      throw new ForbiddenException('Cannot rotate prekey for another user device');
+    }
+
+    if (device.revokedAt) {
+      throw new BadRequestException('Cannot rotate prekey for a revoked device');
+    }
+
+    const isBoundSig = await verifySignedPreKey(
+      input.signedPreKeyPublic,
+      input.signedPreKeySignature,
+      device.signingKeyPublic,
+      device.identityKeyPublic,
+    );
+
+    if (!isBoundSig) {
+      throw new BadRequestException(
+        'Signed pre-key signature verification failed against signingKeyPublic and identityKeyPublic',
+      );
+    }
+
+    if (input.identityBindingSignature) {
+      const isBindingValid = await verifyDeviceBundle(
+        device.identityKeyPublic,
+        input.signedPreKeyPublic,
+        input.identityBindingSignature,
+        device.signingKeyPublic,
+      );
+      if (!isBindingValid) {
+        throw new BadRequestException('Identity binding signature verification failed');
+      }
+    }
+
+    const updated = await this.prisma.device.update({
+      where: { id: deviceId },
+      data: {
+        signedPreKeyPublic: input.signedPreKeyPublic,
+        signedPreKeySignature: input.signedPreKeySignature,
+        lastActiveAt: new Date(),
+      },
+      include: {
+        _count: {
+          select: {
+            oneTimePreKeys: { where: { consumedAt: null } },
+          },
+        },
+      },
+    });
+
+    return {
+      id: updated.id,
+      deviceName: updated.deviceName,
+      identityKeyPublic: updated.identityKeyPublic,
+      signingKeyPublic: updated.signingKeyPublic,
+      signedPreKeyPublic: updated.signedPreKeyPublic,
+      signedPreKeySignature: updated.signedPreKeySignature,
+      remainingPreKeys: updated._count.oneTimePreKeys,
+      lastActiveAt: updated.lastActiveAt,
+      revokedAt: updated.revokedAt,
+      createdAt: updated.createdAt,
     };
   }
 
@@ -152,7 +259,7 @@ export class EncryptionService {
   }
 
   /**
-   * Replenish one-time prekeys for an active device
+   * Replenish one-time prekeys for an active device (race-safe)
    */
   async replenishPreKeys(userId: string, deviceId: string, input: ReplenishPreKeysInput): Promise<{ added: number }> {
     const device = await this.prisma.device.findUnique({
@@ -177,44 +284,50 @@ export class EncryptionService {
       }
     }
 
-    // Upsert or insert ignoring duplicates
-    let added = 0;
-    for (const otpk of input.preKeys) {
-      const existing = await this.prisma.oneTimePreKey.findUnique({
-        where: {
-          deviceId_keyId: {
-            deviceId,
-            keyId: otpk.keyId,
-          },
-        },
-      });
+    const res = await this.prisma.oneTimePreKey.createMany({
+      data: input.preKeys.map((otpk) => ({
+        deviceId,
+        keyId: otpk.keyId,
+        publicKey: otpk.publicKey,
+      })),
+      skipDuplicates: true,
+    });
 
-      if (!existing) {
-        await this.prisma.oneTimePreKey.create({
-          data: {
-            deviceId,
-            keyId: otpk.keyId,
-            publicKey: otpk.publicKey,
-          },
-        });
-        added++;
-      }
-    }
-
-    return { added };
+    return { added: res.count };
   }
 
   /**
    * Fetch key bundles for all active devices of targetUserId.
-   * Atomically claims 1 unconsumed OneTimePreKey per device (Adjustment 4).
+   * Restricted to self or users who share at least one conversation with targetUserId.
+   * Atomically claims 1 unconsumed OneTimePreKey per device.
    */
-  async getUserKeyBundles(targetUserId: string): Promise<UserKeyBundleResponse> {
+  async getUserKeyBundles(callerId: string, targetUserId: string): Promise<UserKeyBundleResponse> {
+    if (callerId !== targetUserId) {
+      const sharedConversation = await this.prisma.conversationMember.findFirst({
+        where: {
+          userId: callerId,
+          conversation: {
+            members: {
+              some: { userId: targetUserId },
+            },
+          },
+        },
+        select: { id: true },
+      });
+
+      if (!sharedConversation) {
+        throw new ForbiddenException(
+          'You can only fetch encryption key bundles for peers you share a conversation with',
+        );
+      }
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, isActive: true },
+      select: { id: true, isActive: true, deletedAt: true },
     });
 
-    if (!user || !user.isActive) {
+    if (!user || !user.isActive || user.deletedAt !== null) {
       throw new NotFoundException('User not found or inactive');
     }
 
@@ -228,7 +341,6 @@ export class EncryptionService {
 
     const deviceBundles = await Promise.all(
       devices.map(async (device) => {
-        // Race-free OTPK claiming using raw SQL transaction with FOR UPDATE SKIP LOCKED
         const claimedKey = await this.prisma.$transaction(async (tx) => {
           const rows = await tx.$queryRaw<Array<{ id: string; keyId: number; publicKey: string }>>`
             SELECT id, "keyId", "publicKey"
@@ -264,7 +376,7 @@ export class EncryptionService {
           signedPreKeySignature: device.signedPreKeySignature,
           oneTimePreKey: claimedKey,
         };
-      })
+      }),
     );
 
     return {
@@ -301,10 +413,9 @@ export class EncryptionService {
     }
 
     if (conversation.isEncrypted) {
-      return conversation; // Already enabled
+      return conversation;
     }
 
-    // Check that both users have at least one active (unrevoked) registered device
     for (const member of conversation.members) {
       const activeDevice = await this.prisma.device.findFirst({
         where: {
@@ -315,7 +426,7 @@ export class EncryptionService {
 
       if (!activeDevice) {
         throw new BadRequestException(
-          `User ${member.userId} has no active registered device capable of E2EE`
+          `User ${member.userId} has no active registered device capable of E2EE`,
         );
       }
     }
@@ -347,7 +458,8 @@ export class EncryptionService {
   }
 
   /**
-   * Verify safety number between caller's device and peer's device
+   * Verify safety number between caller's device and peer's device,
+   * binding both identityKeyPublic and signingKeyPublic.
    */
   async getSafetyNumber(callerId: string, peerUserId: string): Promise<{ safetyNumber: string }> {
     const callerDevice = await this.prisma.device.findFirst({
@@ -366,7 +478,9 @@ export class EncryptionService {
 
     const safetyNumber = await computeSafetyNumber(
       callerDevice.identityKeyPublic,
-      peerDevice.identityKeyPublic
+      peerDevice.identityKeyPublic,
+      callerDevice.signingKeyPublic,
+      peerDevice.signingKeyPublic,
     );
 
     return { safetyNumber };

@@ -59,6 +59,14 @@ export const ConversationItemRow: React.FC<ConversationItemRowProps> = ({
     if (!conversation.lastMessage) return 'No messages yet';
     const content = conversation.lastMessage.content;
     if (content && content.trim()) {
+      // Safeguard: never display raw base64 ciphertext in encrypted DM sidebar previews
+      if (
+        conversation.isEncrypted &&
+        content.length >= 24 &&
+        /^[A-Za-z0-9+/]+={0,2}$/.test(content.trim())
+      ) {
+        return '🔒 Encrypted message';
+      }
       return content;
     }
     // Handle captionless media preview based on type or fallback

@@ -206,13 +206,18 @@ describe('Social Graph, Posts, Likes, Comments & Stories Module (E2E)', () => {
 
     it('creates FOLLOWERS post with confirmed media attachment', async () => {
       // 1. Presign attachment
+      const validPng = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.from('secret-feed-png-data'),
+      ]);
+
       const presignRes = await request(app.getHttpServer())
         .post('/api/v1/media/presign')
         .set('Authorization', `Bearer ${tokenAuthor}`)
         .send({
           filename: 'secret_feed.png',
           mimeType: 'image/png',
-          sizeBytes: 1024,
+          sizeBytes: validPng.length,
         })
         .expect(200);
 
@@ -222,7 +227,7 @@ describe('Social Graph, Posts, Likes, Comments & Stories Module (E2E)', () => {
       await fetch(presignRes.body.data.uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': 'image/png' },
-        body: Buffer.from('fake image content'),
+        body: validPng,
       });
 
       // 3. Confirm upload
@@ -378,13 +383,18 @@ describe('Social Graph, Posts, Likes, Comments & Stories Module (E2E)', () => {
   describe('4. 24-Hour Stories & Expiration Lifecycle', () => {
     it('POST /api/v1/stories -> creates story with image attachment expiring in 24 hours', async () => {
       // 1. Presign attachment
+      const validJpg = Buffer.concat([
+        Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]),
+        Buffer.from('story-photo-jpeg-data'),
+      ]);
+
       const presignRes = await request(app.getHttpServer())
         .post('/api/v1/media/presign')
         .set('Authorization', `Bearer ${tokenAuthor}`)
         .send({
           filename: 'story_photo.jpg',
           mimeType: 'image/jpeg',
-          sizeBytes: 2048,
+          sizeBytes: validJpg.length,
         })
         .expect(200);
 
@@ -394,7 +404,7 @@ describe('Social Graph, Posts, Likes, Comments & Stories Module (E2E)', () => {
       await fetch(presignRes.body.data.uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': 'image/jpeg' },
-        body: Buffer.from('fake story image'),
+        body: validJpg,
       });
 
       // 3. Confirm upload

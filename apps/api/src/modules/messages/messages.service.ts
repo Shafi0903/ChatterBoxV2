@@ -35,6 +35,7 @@ const messageInclude = {
       id: true,
       content: true,
       senderId: true,
+      deletedAt: true,
       sender: {
         select: {
           username: true,
@@ -106,6 +107,17 @@ export class MessagesService {
       }
     }
 
+    // Verify replyToId belongs to this conversation if provided
+    if (dto.replyToId) {
+      const replyTarget = await this.prisma.message.findUnique({
+        where: { id: dto.replyToId },
+        select: { id: true, conversationId: true },
+      });
+      if (!replyTarget || replyTarget.conversationId !== conversationId) {
+        throw new BadRequestException('Referenced reply message does not exist in this conversation');
+      }
+    }
+
     // Verify attachment IDs if provided (Adjustment 1 & 2)
     let verifiedAttachments: any[] = [];
     let inferredType: any = dto.type || 'TEXT';
@@ -166,16 +178,25 @@ export class MessagesService {
           include: messageInclude,
         });
 
-        // Link attachments to this message
-        if (verifiedAttachments.length > 0) {
-          await tx.mediaAttachment.updateMany({
+        // Link attachments atomically (preventing concurrent attachmentId theft)
+        if (verifiedAttachments.length > 0 && dto.attachmentIds) {
+          const linked = await tx.mediaAttachment.updateMany({
             where: {
               id: { in: dto.attachmentIds },
+              uploaderId: senderId,
+              status: 'READY',
+              messageId: null,
+              channelMessageId: null,
+              postId: null,
+              storyId: null,
             },
             data: {
               messageId: msg.id,
             },
           });
+          if (linked.count !== dto.attachmentIds.length) {
+            throw new BadRequestException('One or more attachments are invalid or already linked');
+          }
         }
 
         await tx.conversation.update({
@@ -480,25 +501,34 @@ export class MessagesService {
     });
 
     if (existingReaction) {
-      await this.prisma.messageReaction.delete({
+      await this.prisma.messageReaction.deleteMany({
         where: { id: existingReaction.id },
       });
     } else {
-      await this.prisma.messageReaction.create({
-        data: {
-          messageId,
-          userId,
-          emoji,
-        },
-      });
+      try {
+        await this.prisma.messageReaction.create({
+          data: {
+            messageId,
+            userId,
+            emoji,
+          },
+        });
+      } catch (err: any) {
+        if (err?.code !== 'P2002') {
+          throw err;
+        }
+      }
     }
 
     const updated = await this.prisma.message.findUnique({
       where: { id: messageId },
       include: messageInclude,
     });
+    if (!updated) {
+      throw new NotFoundException('Message not found');
+    }
 
-    const formatted = this.formatMessageItem(updated!);
+    const formatted = this.formatMessageItem(updated);
 
     this.realtimeService.emitToConversation(
       message.conversationId,
@@ -521,49 +551,63 @@ export class MessagesService {
     messageId: string,
     emoji: string,
   ): Promise<MessageItem> {
-    const reaction = await this.prisma.messageReaction.findUnique({
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      select: { id: true, conversationId: true },
+    });
+
+    if (!message) {
+      throw new NotFoundException('Message not found');
+    }
+
+    const member = await this.prisma.conversationMember.findUnique({
       where: {
-        messageId_userId_emoji: {
-          messageId,
+        conversationId_userId: {
+          conversationId: message.conversationId,
           userId,
-          emoji,
         },
-      },
-      include: {
-        message: true,
       },
     });
 
-    if (reaction) {
-      await this.prisma.messageReaction.delete({
-        where: { id: reaction.id },
+    if (!member) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'You are not a member of this conversation.',
       });
-
-      const updated = await this.prisma.message.findUnique({
-        where: { id: messageId },
-        include: messageInclude,
-      });
-
-      const formatted = this.formatMessageItem(updated!);
-
-      this.realtimeService.emitToConversation(
-        reaction.message.conversationId,
-        SocketEvents.MESSAGE_REACTION,
-        {
-          messageId,
-          conversationId: reaction.message.conversationId,
-          reactions: formatted.reactions,
-        },
-      );
-
-      return formatted;
     }
 
-    const unchanged = await this.prisma.message.findUnique({
+    const deleted = await this.prisma.messageReaction.deleteMany({
+      where: {
+        messageId,
+        userId,
+        emoji,
+      },
+    });
+
+    const updated = await this.prisma.message.findUnique({
       where: { id: messageId },
       include: messageInclude,
     });
-    return this.formatMessageItem(unchanged!);
+
+    if (!updated) {
+      throw new NotFoundException('Message not found');
+    }
+
+    const formatted = this.formatMessageItem(updated);
+
+    if (deleted.count > 0) {
+      this.realtimeService.emitToConversation(
+        message.conversationId,
+        SocketEvents.MESSAGE_REACTION,
+        {
+          messageId,
+          conversationId: message.conversationId,
+          reactions: formatted.reactions,
+        },
+      );
+    }
+
+    return formatted;
   }
 
   private formatMessageItem(m: any): MessageItem {
@@ -602,7 +646,7 @@ export class MessagesService {
       replyTo: m.replyTo
         ? {
             id: m.replyTo.id,
-            content: m.replyTo.content,
+            content: m.replyTo.deletedAt !== null ? 'This message was deleted' : m.replyTo.content,
             senderId: m.replyTo.senderId,
             senderName:
               m.replyTo.sender.profile?.displayName || m.replyTo.sender.username,

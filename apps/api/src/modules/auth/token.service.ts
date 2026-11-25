@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
+import { getJwtAccessSecret, parseDurationMs } from '../../config/jwt-secret.util';
 
 export interface JwtPayload {
   sub: string;
@@ -13,7 +14,7 @@ export class TokenService {
   constructor(private jwtService: JwtService) {}
 
   /**
-   * Generates a short-lived access JWT (15m)
+   * Generates a short-lived access JWT (configured via JWT_ACCESS_EXPIRES_IN, default 15m)
    */
   generateAccessToken(payload: JwtPayload): string {
     return this.jwtService.sign(
@@ -24,8 +25,8 @@ export class TokenService {
         jti: crypto.randomUUID(),
       },
       {
-        secret: process.env.JWT_ACCESS_SECRET || 'dev-access-secret-min-32-chars-long',
-        expiresIn: '15m',
+        secret: getJwtAccessSecret(),
+        expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
       },
     );
   }
@@ -45,11 +46,11 @@ export class TokenService {
   }
 
   /**
-   * Calculates expiry date for 7 days in the future
+   * Calculates expiry date using JWT_REFRESH_EXPIRES_IN (default 7 days)
    */
   getRefreshTokenExpiry(): Date {
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
-    return expiresAt;
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ttlMs = parseDurationMs(process.env.JWT_REFRESH_EXPIRES_IN, sevenDaysMs);
+    return new Date(Date.now() + ttlMs);
   }
 }

@@ -11,7 +11,6 @@ import {
   UserCheck,
   Layers,
   Image as ImageIcon,
-  Bookmark,
 } from 'lucide-react';
 import { PublicProfileResponse, PostItem } from '@chatterbox/shared';
 import { api, ApiError } from '../../../../lib/api';
@@ -33,7 +32,7 @@ export default function UserProfilePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'posts' | 'stories' | 'saved'>('posts');
+  const [activeTab, setActiveTab] = useState<'posts' | 'stories'>('posts');
   const [isStartingDm, setIsStartingDm] = useState(false);
 
   // Social Phase 6 state
@@ -386,17 +385,6 @@ export default function UserProfilePage() {
             <Layers className="w-4 h-4" />
             <span>Stories</span>
           </button>
-          <button
-            onClick={() => setActiveTab('saved')}
-            className={`flex items-center gap-2 px-5 py-3 text-xs font-semibold border-b-2 transition-all ${
-              activeTab === 'saved'
-                ? 'border-accent text-accent-bright'
-                : 'border-transparent text-secondary hover:text-primary'
-            }`}
-          >
-            <Bookmark className="w-4 h-4" />
-            <span>Saved</span>
-          </button>
         </div>
 
         {/* Tab Content */}
@@ -455,7 +443,7 @@ export default function UserProfilePage() {
                         loadUserPosts(profileData.userId, postsCursor ?? undefined)
                       }
                       disabled={postsLoading}
-                      className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-semibold text-zinc-300 hover:text-white"
+                      className="px-4 py-2 rounded-xl bg-elevated border border-border text-xs font-semibold text-secondary hover:text-primary transition-colors"
                     >
                       {postsLoading ? 'Loading...' : 'Load more posts'}
                     </button>
@@ -474,18 +462,6 @@ export default function UserProfilePage() {
             <p className="text-sm font-medium text-primary">Active Stories</p>
             <p className="text-xs text-muted max-w-sm mx-auto mt-1">
               Active stories appear in the 24-hour stories tray on your Home feed.
-            </p>
-          </div>
-        )}
-
-        {activeTab === 'saved' && (
-          <div className="p-12 text-center bg-surface border border-border rounded-2xl">
-            <div className="w-10 h-10 rounded-full bg-elevated flex items-center justify-center text-muted mx-auto mb-2">
-              <Bookmark className="w-5 h-5" />
-            </div>
-            <p className="text-sm font-medium text-primary">Nothing saved</p>
-            <p className="text-xs text-muted max-w-sm mx-auto mt-1">
-              Bookmark posts to easily find them later.
             </p>
           </div>
         )}

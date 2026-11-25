@@ -30,10 +30,17 @@ export interface RegisterDeviceDto {
   signingKeyPublic: string;      // stringified EC P-256 public JWK
   signedPreKeyPublic: string;    // stringified EC P-256 public JWK
   signedPreKeySignature: string; // base64 ECDSA signature
+  identityBindingSignature?: string; // base64 ECDSA signature over `${identityKeyPublic}:::${signedPreKeyPublic}`
   oneTimePreKeys: Array<{
     keyId: number;
     publicKey: string; // stringified EC P-256 public JWK
   }>;
+}
+
+export interface RotateSignedPreKeyDto {
+  signedPreKeyPublic: string;
+  signedPreKeySignature: string;
+  identityBindingSignature?: string;
 }
 
 export interface ReplenishPreKeysDto {
@@ -54,6 +61,7 @@ export interface E2eeHeader {
   ephemeralPublicKey: string;     // JSON-stringified JsonWebKeyEC (sender's ephemeral ECDH public key)
   iv: string;                     // Base64 12-byte IV for message ciphertext
   devices: Record<string, E2eeDeviceEnvelope>; // key = deviceId
+  senderSignature?: string;       // Base64 ECDSA signature authenticating sender + ciphertext
 }
 
 export interface DeviceSummary {

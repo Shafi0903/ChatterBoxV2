@@ -5,6 +5,8 @@ import { api } from '../../../lib/api';
 import { useCallStore } from '../../../stores/call.store';
 import { CallHistoryItem, CallType } from '@chatterbox/shared';
 import { Avatar } from '../../../components/ui/Avatar';
+import { Button } from '../../../components/ui/Button';
+import { NewCallModal } from '../../../components/calls/NewCallModal';
 import {
   PhoneCall,
   Phone,
@@ -15,6 +17,7 @@ import {
   PhoneOff,
   Loader2,
   Calendar,
+  Plus,
 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 
@@ -24,18 +27,21 @@ export default function CallsPage() {
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isNewCallModalOpen, setIsNewCallModalOpen] = useState(false);
 
   const { status: activeCallStatus, initiateCall } = useCallStore();
 
   const fetchHistory = useCallback(async () => {
     setIsLoading(true);
+    setError(null);
     try {
       const res = await api.getCallHistory(undefined, 30);
       setCalls(res.data);
       setNextCursor(res.meta.nextCursor);
       setHasMore(res.meta.hasMore);
-    } catch {
-      // Ignored
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load call history.');
     } finally {
       setIsLoading(false);
     }
@@ -48,13 +54,14 @@ export default function CallsPage() {
   const loadMore = async () => {
     if (!nextCursor || isLoadingMore) return;
     setIsLoadingMore(true);
+    setError(null);
     try {
       const res = await api.getCallHistory(nextCursor, 30);
       setCalls((prev) => [...prev, ...res.data]);
       setNextCursor(res.meta.nextCursor);
       setHasMore(res.meta.hasMore);
-    } catch {
-      // Ignored
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load older calls.');
     } finally {
       setIsLoadingMore(false);
     }
@@ -124,9 +131,28 @@ export default function CallsPage() {
             <p className="text-xs text-muted">Recent voice and video calls</p>
           </div>
         </div>
+
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => setIsNewCallModalOpen(true)}
+          className="flex items-center gap-1.5"
+        >
+          <Plus className="w-4 h-4" />
+          <span>New Call</span>
+        </Button>
       </div>
 
       {/* Main Content */}
+      {error && (
+        <div className="p-3.5 rounded-2xl bg-status-busy/10 border border-status-busy/25 text-xs text-status-busy flex items-center justify-between gap-2">
+          <span>{error}</span>
+          <button type="button" onClick={fetchHistory} className="font-semibold underline shrink-0">
+            Retry
+          </button>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="flex flex-col items-center justify-center py-24 gap-3 text-muted">
           <Loader2 className="w-6 h-6 animate-spin text-accent-bright" />
@@ -141,6 +167,15 @@ export default function CallsPage() {
           <p className="text-xs text-muted max-w-sm mt-1 leading-relaxed">
             When you make or receive 1:1 voice and video calls in direct messages, they will appear here.
           </p>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setIsNewCallModalOpen(true)}
+            className="mt-4 flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Start a Call</span>
+          </Button>
         </div>
       ) : (
         <div className="flex flex-col gap-2.5">
@@ -239,6 +274,12 @@ export default function CallsPage() {
           )}
         </div>
       )}
+
+      {/* New Call Modal */}
+      <NewCallModal
+        isOpen={isNewCallModalOpen}
+        onClose={() => setIsNewCallModalOpen(false)}
+      />
     </div>
   );
 }

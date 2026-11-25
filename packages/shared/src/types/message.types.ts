@@ -1,4 +1,5 @@
 import { MediaAttachmentItem } from './media.types';
+import { E2eeHeader } from './encryption.types';
 
 export type MessageType =
   | 'TEXT'
@@ -32,7 +33,7 @@ export interface MessageItem {
   isEncrypted: boolean;
   encryptionVersion?: number | null;
   senderDeviceId?: string | null;
-  e2eeHeader?: any | null;
+  e2eeHeader?: E2eeHeader | null;
   replyToId: string | null;
   replyTo?: {
     id: string;
